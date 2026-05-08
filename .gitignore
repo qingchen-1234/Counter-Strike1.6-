@@ -1,0 +1,9 @@
+# 忽略 node_modules 文件夹
+node_modules/
+
+# 常见的其他不需要上传的文件
+.env
+.DS_Store
+*.log
+dist/
+build/
