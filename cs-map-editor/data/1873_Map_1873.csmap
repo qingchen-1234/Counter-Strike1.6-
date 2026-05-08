@@ -1,0 +1,35 @@
+{
+  "version": "2.2",
+  "mapName": "Map_1873",
+  "roomId": "1873",
+  "createdAt": "2026-05-07T06:30:01.366Z",
+  "updatedAt": "2026-05-07T06:30:01.366Z",
+  "gridSize": 16,
+  "blocks": [
+    {
+      "id": "ded073e8-f774-4e5b-9ce2-c3db9d604b18",
+      "type": "ramp",
+      "position": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "scale": {
+        "x": 64,
+        "y": 64,
+        "z": 64
+      },
+      "rotation": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "color": "rgb(108,108,108)",
+      "texture": "AAATRIGGER",
+      "createdAt": 1778135398871,
+      "creator": "",
+      "lockedBy": null,
+      "tags": []
+    }
+  ]
+}
