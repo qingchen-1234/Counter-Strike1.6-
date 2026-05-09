@@ -527,22 +527,29 @@ export class SceneManager {
 
   setRenderCallback(callback) { this._onRender = callback }
 
+// 右键/中键/左+右键 第一人称视角旋转 (仅对透视相机生效)
   _orbitCamera(dx, dy) {
     const camera = this._getActiveCamera ? this._getActiveCamera() : this.camera
     if (!camera.isPerspectiveCamera) return
 
     const sensitivity = 0.003
-    const offset = camera.position.clone()
-    const spherical = new THREE.Spherical()
-    spherical.setFromVector3(offset)
 
-    spherical.theta -= dx * sensitivity
-    spherical.phi -= dy * sensitivity
-    spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi))
+    // 1. 获取相机当前的欧拉角 (Euler Angles)
+    // 极其关键：旋转顺序必须是 'YXZ'。这保证了左右转头(Y)独立于上下点头(X)，防止画面发生侧倾(Roll)
+    const euler = new THREE.Euler(0, 0, 0, 'YXZ')
+    euler.setFromQuaternion(camera.quaternion)
 
-    const newPos = new THREE.Vector3().setFromSpherical(spherical)
-    camera.position.copy(newPos)
-    camera.lookAt(0, 0, 0)
+    // 2. 根据鼠标的位移，修改偏航角 (左右看) 和 俯仰角 (上下看)
+    euler.y -= dx * sensitivity
+    euler.x -= dy * sensitivity
+
+    // 3. 限制俯仰角 (Pitch Clamp)
+    // 防止玩家一直往上看导致越过头顶，发生经典的万向节死锁/画面倒转
+    const PI_2 = Math.PI / 2 - 0.01 // 略小于 90 度
+    euler.x = Math.max(-PI_2, Math.min(PI_2, euler.x))
+
+    // 4. 将计算好的新角度重新应用给相机
+    camera.quaternion.setFromEuler(euler)
   }
 
   _updateCamera() {
