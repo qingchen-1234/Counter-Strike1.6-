@@ -232,14 +232,31 @@ export class ViewportManager {
     r.setScissorTest(false)
   }
 
-  zoomOrthoCamera(camera, delta) {
-    const factor = 1 + delta * 0.001
-    const h = camera.top - camera.bottom
-    const w = camera.right - camera.left
-    camera.top = h * factor / 2
-    camera.bottom = -h * factor / 2
-    camera.right = w * factor / 2
-    camera.left = -w * factor / 2
+// ========== 缩放正交相机 (支持向鼠标指针位置吸附) ==========
+  zoomOrthoCamera(camera, delta, ndcX = 0, ndcY = 0) {
+    // 强制每次缩放幅度为 10%，避免用户手速过快导致画面翻转崩溃
+    const factor = Math.pow(1.1, Math.sign(delta))
+
+    // 记录原尺寸
+    const wOld = camera.right - camera.left
+    const hOld = camera.top - camera.bottom
+
+    // 实施倍率缩放
+    camera.left *= factor
+    camera.right *= factor
+    camera.top *= factor
+    camera.bottom *= factor
     camera.updateProjectionMatrix()
+
+    // 计算缩放后丢失的物理宽度和高度
+    const wNew = camera.right - camera.left
+    const hNew = camera.top - camera.bottom
+    const deltaW = wOld - wNew
+    const deltaH = hOld - hNew
+
+    // ★ 视觉魔术：根据鼠标当前距离中心的比例，反向移动摄像机！
+    // 这样在屏幕上看，被鼠标指着的那一个像素点永远不会发生偏移。
+    camera.translateX(ndcX * deltaW / 2)
+    camera.translateY(ndcY * deltaH / 2)
   }
 }

@@ -293,15 +293,41 @@ export class SceneManager {
       }
     })
 
+// 滚轮缩放 (支持向鼠标中心精准缩放)
     viewportEl.addEventListener('wheel', (e) => {
       e.preventDefault()
-      const camera = this._getActiveCamera ? this._getActiveCamera() : this.camera
-      if (camera.isOrthographicCamera && this._viewportManager) {
-        this._viewportManager.zoomOrthoCamera(camera, e.deltaY)
-      } else {
+
+      const rect = viewportEl.getBoundingClientRect()
+      const canvasX = e.clientX - rect.left
+      const canvasY = e.clientY - rect.top
+
+      let targetCamera = this.camera
+      let ndcX = 0, ndcY = 0
+
+      if (this._viewportManager) {
+        const rayData = this._viewportManager.getRaycasterData(canvasX, canvasY)
+        if (rayData) {
+          // ★ 核心修复：永远缩放鼠标【当前悬停】的那个视图！
+          targetCamera = rayData.camera
+          ndcX = rayData.mouseCoords.x
+          ndcY = rayData.mouseCoords.y
+
+          // 顺手将其设为激活视图，这样滚轮缩放后直接按 WASD 就能无缝平移了
+          this._viewportManager.activateView(rayData.viewName)
+        } else if (this._getActiveCamera) {
+          targetCamera = this._getActiveCamera()
+        }
+      }
+
+      // 如果目标是三视图的正交相机
+      if (targetCamera && targetCamera.isOrthographicCamera && this._viewportManager) {
+        this._viewportManager.zoomOrthoCamera(targetCamera, e.deltaY, ndcX, ndcY)
+      }
+      // 如果目标是自由视角的透视相机
+      else if (targetCamera) {
         const forward = new THREE.Vector3()
-        camera.getWorldDirection(forward)
-        camera.position.addScaledVector(forward, -e.deltaY * 50 * 0.01)
+        targetCamera.getWorldDirection(forward)
+        targetCamera.position.addScaledVector(forward, -e.deltaY * 50 * 0.01)
       }
     }, { passive: false })
 
@@ -581,27 +607,56 @@ syncBlockFromMesh(blockId) {
     camera.quaternion.setFromEuler(euler)
   }
 
-  _updateCamera() {
+_updateCamera() {
     const camera = this._getActiveCamera ? this._getActiveCamera() : this.camera
-    if (!camera.isPerspectiveCamera) return
+    if (!camera) return
 
     const speed = this.moveSpeed * 0.016
-    const dir = new THREE.Vector3()
-    const forward = new THREE.Vector3()
-    camera.getWorldDirection(forward)
-    forward.y = 0; forward.normalize()
-    const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize()
 
-    if (this.keys['w']) dir.add(forward)
-    if (this.keys['s']) dir.add(forward.clone().negate())
-    if (this.keys['a']) dir.add(right.clone().negate())
-    if (this.keys['d']) dir.add(right)
-    if (this.keys['q']) dir.y -= 1
-    if (this.keys['e']) dir.y += 1
+    // ★ 1. 第一人称飞行视角 (透视相机)
+    if (camera.isPerspectiveCamera) {
+      const dir = new THREE.Vector3()
+      const forward = new THREE.Vector3()
+      camera.getWorldDirection(forward)
+      forward.y = 0
+      forward.normalize()
+      const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize()
 
-    if (dir.length() > 0) {
-      dir.normalize().multiplyScalar(speed)
-      camera.position.add(dir)
+      // 兼容 WASD 和 方向键
+      if (this.keys['w'] || this.keys['arrowup']) dir.add(forward)
+      if (this.keys['s'] || this.keys['arrowdown']) dir.add(forward.clone().negate())
+      if (this.keys['a'] || this.keys['arrowleft']) dir.add(right.clone().negate())
+      if (this.keys['d'] || this.keys['arrowright']) dir.add(right)
+      if (this.keys['q']) dir.y -= 1
+      if (this.keys['e']) dir.y += 1
+
+      if (dir.length() > 0) {
+        dir.normalize().multiplyScalar(speed)
+        camera.position.add(dir)
+      }
+    }
+    // ★ 2. 正交视图平面平移 (三视图专属)
+    else if (camera.isOrthographicCamera) {
+      let dx = 0
+      let dy = 0
+
+      // W/S 和 上下方向键：在垂直方向平移
+      if (this.keys['w'] || this.keys['arrowup']) dy += 1
+      if (this.keys['s'] || this.keys['arrowdown']) dy -= 1
+
+      // A/D 和 左右方向键：在水平方向平移
+      if (this.keys['a'] || this.keys['arrowleft']) dx -= 1
+      if (this.keys['d'] || this.keys['arrowright']) dx += 1
+
+      if (dx !== 0 || dy !== 0) {
+        // 根据当前的缩放层级调整平移速度，保证不管放多大移动手感都一致
+        const orthoWidth = camera.right - camera.left
+        const panSpeed = (orthoWidth / 1000) * (speed * 1.5)
+
+        // 使用局部坐标空间平移（translateX/Y），这会自动适配 顶/前/侧 三个不同朝向的摄像机！
+        camera.translateX(dx * panSpeed)
+        camera.translateY(dy * panSpeed)
+      }
     }
   }
 }
