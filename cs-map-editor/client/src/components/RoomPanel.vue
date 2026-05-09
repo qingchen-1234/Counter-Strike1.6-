@@ -362,7 +362,7 @@ defineExpose({
 .modal-box input:focus { border-color: #e94560; }
 .modal-btns { display: flex; gap: 8px; margin-top: 8px; }
 .modal-btn { flex: 1; padding: 8px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
-.modal-btn.cancel { background: #332; color: #999; }
+.modal-btn.cancel { background: #333; color: #999; }
 .modal-btn.confirm { background: #e94560; color: white; }
 .modal-btn.confirm:disabled { background: #333; cursor: not-allowed; }
 .error-msg { color: #ff6b6b; font-size: 11px; margin-bottom: 8px; }
