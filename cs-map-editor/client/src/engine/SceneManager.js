@@ -137,13 +137,16 @@ export class SceneManager {
     this.transformControls.setSize(0.8)
     this.transformControls.setTranslationSnap(GRID_SIZE)
 
-    this.transformControls.addEventListener('dragging-changed', (e) => {})
-
-    this.transformControls.addEventListener('objectChange', () => {
-      const obj = this.transformControls.object
-      if (obj && obj.userData.blockId && this.onBlockMoved) {
-        const data = this.syncBlockFromMesh(obj.userData.blockId)
-        if (data) this.onBlockMoved(obj.userData.blockId, data)
+// 在 init() 中找到这里，替换掉原有的 dragging-changed 和 objectChange
+    this.transformControls.addEventListener('dragging-changed', (e) => {
+      // 当 e.value 为 false 时，代表鼠标松开，拖拽完成
+      if (!e.value) {
+        const obj = this.transformControls.object
+        if (obj && obj.userData.blockId && this.onBlockMoved) {
+          // 此时同步，不仅同步位移，还会把你拉伸后的绝对尺寸同步给核心数据
+          const data = this.syncBlockFromMesh(obj.userData.blockId)
+          if (data) this.onBlockMoved(obj.userData.blockId, data)
+        }
       }
     })
     this.scene.add(this.transformControls)
@@ -419,7 +422,7 @@ export class SceneManager {
     }
   }
 
-  renderBlock(block) {
+renderBlock(block) {
     const geometry = this._createGeometry(block)
     const originalColor = block.color || '#888888'
 
@@ -435,6 +438,9 @@ export class SceneManager {
     mesh.userData.originalColor = originalColor
     mesh.userData.blockType = block.type || 'cube'
 
+    // ★ 新增：将初始物理尺寸存入 userData 中，作为后续拉伸的基准计算值
+    mesh.userData.baseScale = { x: block.scale.x, y: block.scale.y, z: block.scale.z }
+
     if (block.rotation) {
       mesh.rotation.set(
         THREE.MathUtils.degToRad(block.rotation.x || 0),
@@ -446,14 +452,19 @@ export class SceneManager {
     this.blockMeshes.set(block.id, mesh)
   }
 
-  updateBlockMesh(id, position, scale, rotation) {
+updateBlockMesh(id, position, scale, rotation) {
     const mesh = this.blockMeshes.get(id)
     if (!mesh) return
     if (position) mesh.position.set(position.x, position.z, position.y)
     if (scale) {
       mesh.geometry.dispose()
       const blockType = mesh.userData.blockType || 'cube'
+      // 重新生成拥有绝对物理尺寸的几何体
       mesh.geometry = this._createGeometry({ type: blockType, scale })
+
+      // ★ 新增：更新基准尺寸，并将网格的缩放倍率归零复位，防止无限变大
+      mesh.userData.baseScale = { x: scale.x, y: scale.y, z: scale.z }
+      mesh.scale.set(1, 1, 1)
     }
     if (rotation) {
       mesh.rotation.set(
@@ -464,15 +475,24 @@ export class SceneManager {
     }
   }
 
-  syncBlockFromMesh(blockId) {
+syncBlockFromMesh(blockId) {
     const mesh = this.blockMeshes.get(blockId)
     if (!mesh) return null
+
+    const base = mesh.userData.baseScale || { x: 64, y: 64, z: 64 }
+
     return {
       position: { x: mesh.position.x, y: mesh.position.z, z: mesh.position.y },
       rotation: {
         x: THREE.MathUtils.radToDeg(mesh.rotation.x),
         y: THREE.MathUtils.radToDeg(mesh.rotation.z),
         z: THREE.MathUtils.radToDeg(mesh.rotation.y)
+      },
+      // ★ 新增：将 相对拉伸率 * 基准尺寸 还原为绝对尺寸，输出给导出器！
+      scale: {
+        x: Math.round(base.x * mesh.scale.x),
+        y: Math.round(base.y * mesh.scale.y),
+        z: Math.round(base.z * mesh.scale.z)
       }
     }
   }

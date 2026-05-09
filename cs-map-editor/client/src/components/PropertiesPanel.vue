@@ -40,17 +40,17 @@
       <div class="prop-section">
         <h5>尺寸 (Scale)</h5>
         <div class="input-row">
-          <label>宽</label>
+          <label>宽(X)</label>
           <input type="number" step="16" min="16" :value="selectedBlock.scale.x"
             @change="onScaleChange('x', $event)" />
         </div>
         <div class="input-row">
-          <label>长</label>
+          <label>高(Y)</label> <!-- 修正：Y 轴是高度 -->
           <input type="number" step="16" min="16" :value="selectedBlock.scale.y"
             @change="onScaleChange('y', $event)" />
         </div>
         <div class="input-row">
-          <label>高</label>
+          <label>长(Z)</label> <!-- 修正：Z 轴是长度/深度 -->
           <input type="number" step="16" min="16" :value="selectedBlock.scale.z"
             @change="onScaleChange('z', $event)" />
         </div>

@@ -18,10 +18,10 @@ function generateId() {
 export const BLOCK_TYPES = {
   cube:      { name: '立方体', icon: '🟫', geom: 'box' },
   ramp:      { name: '斜坡',   icon: '📐', geom: 'ramp' },
-  stairs:    { name: '楼梯',   icon: '🪜', geom: 'stairs' },
+  // stairs:    { name: '楼梯',   icon: '🪜', geom: 'stairs' },
   wedge:     { name: '楔形',   icon: '🔺', geom: 'wedge' },
-  cylinder:  { name: '圆柱',   icon: '🫙', geom: 'cylinder' },
-  plane:     { name: '平面',   icon: '⬜', geom: 'plane' },
+  // cylinder:  { name: '圆柱',   icon: '🫙', geom: 'cylinder' },
+  // plane:     { name: '平面',   icon: '⬜', geom: 'plane' },
 }
 
 let GRID_SNAP = 16          // 网格吸附单位（可变）
