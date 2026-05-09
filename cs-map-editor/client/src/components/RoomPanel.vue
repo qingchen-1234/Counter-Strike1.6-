@@ -8,28 +8,37 @@
         <span class="minimize-btn" @click="minimized = true">◀</span>
       </div>
 
-      <!-- 未连接 -->
+      <!-- 状态一：未连接 (包含：正在连接 / 连接失败) -->
       <div v-if="!socketConnected" class="offline-hint">
-        <p>未连接服务器</p>
-        <button class="action-btn primary" @click="connectServer">🔌 连接</button>
-        <p v-if="connectError" class="error-msg">{{ connectError }}</p>
-        <p class="sub-hint">离线模式: 可移动已有方块</p>
+        <!-- 1.1 正在自动连接中 -->
+        <template v-if="isConnecting">
+          <div class="loading-spinner"></div>
+          <p>正在连接服务器...</p>
+        </template>
+
+        <!-- 1.2 无网络 / 连接失败 -->
+        <template v-else>
+          <p>⚠️ 无法连接到服务器</p>
+          <p v-if="connectError" class="error-msg">{{ connectError }}</p>
+          <button class="action-btn primary" @click="retryConnect">🔄 重新连接</button>
+          <p class="sub-hint">离线模式: 可移动已有方块</p>
+        </template>
       </div>
 
-      <!-- 已连接未加入 -->
+      <!-- 状态二：已连接，浏览房间列表 -->
       <template v-if="socketConnected && !inRoom">
         <div class="btn-group">
           <button class="action-btn primary" @click="showCreateModal = true">➕ 创建</button>
           <button class="action-btn secondary" @click="showJoinModal = true">🔗 加入</button>
-          <button class="action-btn refresh" @click="refreshRoomList">🔄</button>
+          <button class="action-btn refresh" @click="refreshRoomList" title="刷新房间列表">🔄</button>
         </div>
         <div class="room-list-section">
           <div class="section-title">可加入的房间</div>
-          <div v-if="roomList.length === 0" class="empty-list">暂无房间</div>
+          <div v-if="roomList.length === 0" class="empty-list">暂无房间，快去创建一个吧！</div>
           <div v-for="room in roomList" :key="room.roomId" class="room-card" @click="tryJoinRoom(room)">
             <div class="room-card-header">
               <span class="room-id">#{{ room.roomId }}</span>
-              <span v-if="room.hasPassword">🔒</span>
+              <span v-if="room.hasPassword" title="需要密码">🔒</span>
             </div>
             <div class="room-card-name">{{ room.roomName }}</div>
             <div class="room-card-info">👤{{ room.userCount }} 📦{{ room.blockCount }}</div>
@@ -37,7 +46,7 @@
         </div>
       </template>
 
-      <!-- 已加入房间 -->
+      <!-- 状态三：已加入房间，协作中 -->
       <template v-if="inRoom && roomState">
         <div class="room-info-header">
           <div class="room-badge">#{{ roomState.roomId }}</div>
@@ -56,7 +65,7 @@
         <div class="room-stats">📦{{ blockCount }} 方块</div>
         <div class="btn-group">
           <button class="action-btn refresh" @click="refreshBlocks">🔄 刷新方块</button>
-          <button class="action-btn danger" @click="leaveRoom">🚪 离开</button>
+          <button class="action-btn danger" @click="leaveRoom">🚪 离开房间</button>
         </div>
       </template>
 
@@ -97,27 +106,37 @@
 </template>
 
 <script setup>
-import { ref, inject, watch } from 'vue'
+import { ref, inject, watch, onMounted } from 'vue'
 
 const emit = defineEmits(['connect', 'create-room', 'join-room', 'leave-room', 'refresh-rooms', 'refresh-blocks', 'room-state-updated'])
 const sceneManager = inject('sceneManager')
 const socketClient = inject('socketClient')
 const blockManager = inject('blockManager')
 
+// UI 状态
 const minimized = ref(false)
+const isConnecting = ref(true) // 新增：控制加载中动画，默认 true
 const socketConnected = ref(false)
 const inRoom = ref(false)
+const showCreateModal = ref(false)
+const showJoinModal = ref(false)
+
+// 数据状态
 const roomState = ref(null)
 const users = ref([])
 const myId = ref('')
 const blockCount = ref(0)
 const roomList = ref([])
 const joinError = ref('')
-const showCreateModal = ref(false)
-const showJoinModal = ref(false)
-const connectError = ref('')   // 新增: 连接错误信息
+const connectError = ref('')
+
 const createForm = ref({ roomName: '未命名地图', password: '' })
 const joinForm = ref({ roomId: '', password: '', userName: 'Player_' + Math.floor(Math.random() * 1000) })
+
+// 🚀 组件挂载完毕后，立即触发自动连接
+onMounted(() => {
+  connectServer()
+})
 
 watch(socketClient, (sc) => {
   if (!sc) return
@@ -154,7 +173,6 @@ function setupSocketListeners(sc) {
     inRoom.value = true
     joinError.value = ''
 
-    // ★ 修复: 渲染房间中已有的所有方块
     if (data.blocks && data.blocks.length > 0) {
       for (const block of data.blocks) {
         if (!blockManager.getBlock(block.id)) {
@@ -201,7 +219,18 @@ function setupSocketListeners(sc) {
   }
 }
 
-function connectServer() { emit('connect') }
+// 触发连接动作
+function connectServer() {
+  isConnecting.value = true
+  connectError.value = ''
+  emit('connect')
+}
+
+// 重新连接动作
+function retryConnect() {
+  connectServer()
+}
+
 function refreshRoomList() { emit('refresh-rooms') }
 
 function createRoom() {
@@ -228,17 +257,23 @@ function leaveRoom() {
   inRoom.value = false; users.value = []; roomState.value = null; blockCount.value = 0
 }
 
+// 供父组件 (App.vue) 回调更改状态
 defineExpose({
-  setConnected(s) { socketConnected.value = s },
+  setConnected(s) {
+    socketConnected.value = s
+    if (s) isConnecting.value = false // 如果连接成功，关闭 loading 动画
+  },
   setInRoom(s) { inRoom.value = s },
   setError(msg) {
     connectError.value = msg
     socketConnected.value = false
+    isConnecting.value = false // 如果连接出错，关闭 loading 动画，显示重试按钮
   }
 })
 </script>
 
 <style scoped>
+/* 保持你原本的所有样式，并添加以下针对 Loading 动画的 CSS */
 .room-panel {
   width: 230px; min-width: 230px; max-width: 230px; flex-shrink: 0;
   background: #16213e; border-right: 1px solid #0f3460;
@@ -255,9 +290,25 @@ defineExpose({
 }
 .panel-title { font-weight: bold; font-size: 13px; color: #e94560; }
 .minimize-btn { cursor: pointer; color: #666; font-size: 11px; }
-.offline-hint { padding: 16px 12px; text-align: center; color: #888; }
-.offline-hint p { margin-bottom: 8px; }
-.sub-hint { font-size: 10px; color: #555; margin-top: 8px; }
+
+.offline-hint { padding: 30px 12px; text-align: center; color: #888; }
+.offline-hint p { margin-bottom: 12px; }
+.sub-hint { font-size: 10px; color: #555; margin-top: 12px; }
+
+/* 🌟 新增的纯 CSS Loading 旋转动画 */
+.loading-spinner {
+  width: 26px; height: 26px;
+  border: 3px solid #0f3460;
+  border-top: 3px solid #e94560;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin: 0 auto 12px;
+}
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
 .btn-group { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px; }
 .action-btn {
   padding: 7px 12px; border: none; border-radius: 4px; cursor: pointer;
@@ -268,9 +319,11 @@ defineExpose({
 .action-btn.refresh { background: #1a1a2e; color: #888; border: 1px solid #333; font-size: 14px; flex: 0; }
 .action-btn.danger { background: #333; color: #ff6b6b; width: 100%; margin-top: 8px; }
 .action-btn:hover { opacity: 0.85; }
+
 .room-list-section { flex: 1; overflow-y: auto; padding: 0 10px; }
 .section-title { font-size: 11px; color: #4a9eff; padding: 8px 2px 6px; text-transform: uppercase; }
-.empty-list { padding: 16px; text-align: center; color: #555; }
+.empty-list { padding: 20px 0; text-align: center; color: #666; }
+
 .room-card {
   background: #1a1a2e; border: 1px solid #0f3460; border-radius: 6px;
   padding: 10px; margin-bottom: 6px; cursor: pointer; transition: all 0.2s;
@@ -293,6 +346,7 @@ defineExpose({
 .me-tag { font-size: 10px; color: #4a9eff; }
 .user-editing { width: 100%; font-size: 9px; color: #ffcc00; padding-left: 14px; }
 .room-stats { padding: 8px 12px; color: #666; font-size: 11px; border-top: 1px solid #0f3460; }
+
 .modal-overlay {
   position: fixed; top: 0; left: 0; width: 100%; height: 100%;
   background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 999;
