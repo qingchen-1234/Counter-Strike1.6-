@@ -7,18 +7,14 @@ import * as THREE from 'three'
 
 export class MapExporter {
 
-  /**
-   * 导出所有方块为 .map 文件内容
-   */
   static export(blocks) {
     const lines = []
 
-    // 1. 极简的 worldspawn 头部 (完全向 J.A.C.K 靠齐)
     lines.push('{')
     lines.push('"classname" "worldspawn"')
     lines.push('"mapversion" "220"')
     lines.push('"wad" ""')
-    lines.push('"_generator" "CSMapCollab v2.5 (J.A.C.K Standard)"')
+    lines.push('"_generator" "CSMapCollab v2.6 (J.A.C.K Standard)"')
 
     for (const block of blocks) {
       const solidLines = this._blockToSolid(block)
@@ -29,14 +25,9 @@ export class MapExporter {
     return lines.join('\n')
   }
 
-  /**
-   * 将单个方块转换为 solid 定义
-   * 严格复刻 J.A.C.K. 的 "L型边缘取点法"，彻底杜绝对角线拉伸错误
-   */
   static _blockToSolid(block) {
-    const { position, scale, rotation } = block
+    const { position, scale, rotation, type } = block
 
-    // 创建虚拟对象同步空间变换
     const dummy = new THREE.Object3D()
     dummy.position.set(position.x, position.z, position.y)
 
@@ -49,24 +40,58 @@ export class MapExporter {
     }
     dummy.updateMatrix()
 
-    // 获取局部半尺寸 (Three.js 本地轴)
     const hx = scale.x / 2
     const hy = scale.y / 2
     const hz = scale.z / 2
 
-    // 严密的 8 个基准顶点 (Three.js 坐标系)
-    const localVerts = [
-      new THREE.Vector3(-hx, -hy, -hz), // 0
-      new THREE.Vector3( hx, -hy, -hz), // 1
-      new THREE.Vector3(-hx,  hy, -hz), // 2
-      new THREE.Vector3( hx,  hy, -hz), // 3
-      new THREE.Vector3(-hx, -hy,  hz), // 4
-      new THREE.Vector3( hx, -hy,  hz), // 5
-      new THREE.Vector3(-hx,  hy,  hz), // 6
-      new THREE.Vector3( hx,  hy,  hz), // 7
-    ]
+    let localVerts = []
+    let faces = []
 
-    // 变换到世界坐标并转为 GoldSrc 坐标系 (Three.Y 变 Gold.Z, Three.Z 变 Gold.Y)
+    if (type === 'ramp') {
+      // ==========================================
+      // ★ 斜坡 (Ramp / Wedge) - 6 个顶点，5 个面
+      // ==========================================
+      localVerts = [
+        new THREE.Vector3(-hx, -hz, -hy), // 0: 底-左前
+        new THREE.Vector3( hx, -hz, -hy), // 1: 底-右前
+        new THREE.Vector3( hx,  hz, -hy), // 2: 底-右后
+        new THREE.Vector3(-hx, -hz,  hy), // 3: 顶-左前
+        new THREE.Vector3( hx, -hz,  hy), // 4: 顶-右前
+        new THREE.Vector3( hx,  hz,  hy), // 5: 顶-右后
+      ]
+      // 严格经过叉乘验证的 5 面法线顺序，J.A.C.K 完美识别
+      faces = [
+        { name: 'Bottom', i: [0, 2, 1], u: '[ 1 0 0 0 ]', v: '[ 0 -1 0 0 ]' },
+        { name: 'Top',    i: [3, 4, 5], u: '[ 1 0 0 0 ]', v: '[ 0 -1 0 0 ]' },
+        { name: 'Front',  i: [3, 0, 1], u: '[ 1 0 0 0 ]', v: '[ 0 0 -1 0 ]' },
+        { name: 'Right',  i: [4, 1, 2], u: '[ 0 1 0 0 ]', v: '[ 0 0 -1 0 ]' },
+        { name: 'Slant',  i: [5, 2, 0], u: '[ 1 0 0 0 ]', v: '[ 0 0 -1 0 ]' }
+      ]
+    } else {
+      // ==========================================
+      // ★ 立方体 (Cube) - 8 个顶点，6 个面
+      // ==========================================
+      localVerts = [
+        new THREE.Vector3(-hx, -hy, -hz), // 0
+        new THREE.Vector3( hx, -hy, -hz), // 1
+        new THREE.Vector3(-hx,  hy, -hz), // 2
+        new THREE.Vector3( hx,  hy, -hz), // 3
+        new THREE.Vector3(-hx, -hy,  hz), // 4
+        new THREE.Vector3( hx, -hy,  hz), // 5
+        new THREE.Vector3(-hx,  hy,  hz), // 6
+        new THREE.Vector3( hx,  hy,  hz), // 7
+      ]
+      faces = [
+        { name: 'Left (-X)',   i: [2, 0, 6], u: '[ 0 1 0 0 ]', v: '[ 0 0 -1 0 ]' },
+        { name: 'Right (+X)',  i: [7, 5, 3], u: '[ 0 1 0 0 ]', v: '[ 0 0 -1 0 ]' },
+        { name: 'Back (+Y)',   i: [6, 4, 7], u: '[ 1 0 0 0 ]', v: '[ 0 0 -1 0 ]' },
+        { name: 'Front (-Y)',  i: [3, 1, 2], u: '[ 1 0 0 0 ]', v: '[ 0 0 -1 0 ]' },
+        { name: 'Top (+Z)',    i: [3, 2, 7], u: '[ 1 0 0 0 ]', v: '[ 0 -1 0 0 ]' },
+        { name: 'Bottom (-Z)', i: [4, 0, 5], u: '[ 1 0 0 0 ]', v: '[ 0 -1 0 0 ]' },
+      ]
+    }
+
+    // 统一的世界坐标变换与坐标系映射
     const v = localVerts.map(vert => {
       const w = vert.clone().applyMatrix4(dummy.matrix)
       return {
@@ -75,18 +100,6 @@ export class MapExporter {
         z: Math.round(w.y)
       }
     })
-
-    // 🔥 核心奥秘：这完全是 J.A.C.K 的原生取点逻辑！
-    // 不跨对角线，沿着两条相邻边走，且保证法线朝外。
-    // v 的索引映射关系已经通过坐标系反推精确对齐。
-    const faces = [
-      { name: 'Left (-X)',   i: [2, 0, 6], u: '[ 0 1 0 0 ]', v: '[ 0 0 -1 0 ]' },
-      { name: 'Right (+X)',  i: [7, 5, 3], u: '[ 0 1 0 0 ]', v: '[ 0 0 -1 0 ]' },
-      { name: 'Back (+Y)',   i: [6, 4, 7], u: '[ 1 0 0 0 ]', v: '[ 0 0 -1 0 ]' },
-      { name: 'Front (-Y)',  i: [3, 1, 2], u: '[ 1 0 0 0 ]', v: '[ 0 0 -1 0 ]' },
-      { name: 'Top (+Z)',    i: [3, 2, 7], u: '[ 1 0 0 0 ]', v: '[ 0 -1 0 0 ]' },
-      { name: 'Bottom (-Z)', i: [4, 0, 5], u: '[ 1 0 0 0 ]', v: '[ 0 -1 0 0 ]' },
-    ]
 
     const textureName = block.texture || 'AAATRIGGER'
     const lines = ['{']
