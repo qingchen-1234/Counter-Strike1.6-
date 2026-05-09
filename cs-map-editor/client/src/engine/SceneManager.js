@@ -374,51 +374,66 @@ export class SceneManager {
     }
   }
 
+// ---- 方块可视化 (支持多种几何体) ----
   _createGeometry(block) {
     const { type, scale } = block
-    const sx = scale.x, sy = scale.z, sz = scale.y
+    // 明确映射关系：X=宽, Y=深(长), Z=高
+    const width = scale.x
+    const depth = scale.y
+    const height = scale.z
+
+    const hx = width / 2
+    const hy = height / 2
+    const hz = depth / 2
 
     switch (type) {
       case 'cube':
-        return new THREE.BoxGeometry(sx, sz, sy)
+        return new THREE.BoxGeometry(width, height, depth)
+
       case 'ramp': {
-        const hx = sx / 2, hz = sy / 2
+        // 斜坡: 绘制在 XY 平面 (此时 Y 为高度), 向 Z轴 挤压 (深度)
         const shape = new THREE.Shape()
-        shape.moveTo(-hx, -hz)
-        shape.lineTo( hx, -hz)
-        shape.lineTo( hx,  hz)
-        shape.lineTo(-hx, -hz)
-        const geo = new THREE.ExtrudeGeometry(shape, { depth: sz, bevelEnabled: false })
-        geo.translate(0, 0, -sz / 2)
+        shape.moveTo(-hx, -hy) // 左下
+        shape.lineTo( hx, -hy) // 右下
+        shape.lineTo( hx,  hy) // 右上 (直角在这里)
+        shape.lineTo(-hx, -hy) // 闭合
+        const geo = new THREE.ExtrudeGeometry(shape, { depth: depth, bevelEnabled: false })
+        geo.translate(0, 0, -hz) // 将挤压后的几何体居中
         return geo
       }
+
       case 'stairs': {
         const group = []
-        const stepH = sz / 4, stepD = sy / 4
+        const stepH = height / 4
+        const stepD = depth / 4
         for (let i = 0; i < 4; i++) {
-          const stepGeo = new THREE.BoxGeometry(sx, stepH, stepD)
-          stepGeo.translate(0, -sz / 2 + stepH * i + stepH / 2, -sy / 2 + stepD * i + stepD / 2)
+          const stepGeo = new THREE.BoxGeometry(width, stepH, stepD)
+          stepGeo.translate(0, -height / 2 + stepH * i + stepH / 2, -depth / 2 + stepD * i + stepD / 2)
           group.push(stepGeo)
         }
         return mergeGeometries(group)
       }
+
       case 'wedge': {
-        const hx = sx / 2, hz = sy / 2
+        // 楔形: 尖端居中
         const shape = new THREE.Shape()
-        shape.moveTo(-hx, -hz)
-        shape.lineTo( hx, -hz)
-        shape.lineTo( 0,  hz)
+        shape.moveTo(-hx, -hy) // 左下
+        shape.lineTo( hx, -hy) // 右下
+        shape.lineTo( 0,   hy) // 顶部居中
         shape.closePath()
-        const geo = new THREE.ExtrudeGeometry(shape, { depth: sz, bevelEnabled: false })
-        geo.translate(0, 0, -sz / 2)
+        const geo = new THREE.ExtrudeGeometry(shape, { depth: depth, bevelEnabled: false })
+        geo.translate(0, 0, -hz)
         return geo
       }
+
       case 'cylinder':
-        return new THREE.CylinderGeometry(Math.min(sx, sy) / 2, Math.min(sx, sy) / 2, sz, 16)
+        return new THREE.CylinderGeometry(Math.min(width, depth) / 2, Math.min(width, depth) / 2, height, 16)
+
       case 'plane':
-        return new THREE.BoxGeometry(sx, 2, sy)
+        return new THREE.BoxGeometry(width, 2, depth)
+
       default:
-        return new THREE.BoxGeometry(sx, sz, sy)
+        return new THREE.BoxGeometry(width, height, depth)
     }
   }
 
@@ -565,6 +580,7 @@ syncBlockFromMesh(blockId) {
 
     camera.quaternion.setFromEuler(euler)
   }
+
   _updateCamera() {
     const camera = this._getActiveCamera ? this._getActiveCamera() : this.camera
     if (!camera.isPerspectiveCamera) return

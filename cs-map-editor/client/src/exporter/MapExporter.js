@@ -14,7 +14,7 @@ export class MapExporter {
     lines.push('"classname" "worldspawn"')
     lines.push('"mapversion" "220"')
     lines.push('"wad" ""')
-    lines.push('"_generator" "CSMapCollab v2.6 (J.A.C.K Standard)"')
+    lines.push('"_generator" "CSMapCollab v2.8 (J.A.C.K Standard)"')
 
     for (const block of blocks) {
       const solidLines = this._blockToSolid(block)
@@ -41,22 +41,19 @@ export class MapExporter {
     }
     dummy.updateMatrix()
 
+    // 明确轴向映射：x=宽, y=长(深), z=高
     const hx = scale.x / 2
-    const hy = scale.y / 2
-    const hz = scale.z / 2
+    const hy = scale.z / 2  // 注意这里！映射到 Three 内部的 Y轴(高度)
+    const hz = scale.y / 2  // 映射到 Three 内部的 Z轴(深度)
 
     let localVerts = []
     let faces = []
 
-    // ==========================================================
-    // ★ 异形方块逻辑：斜坡(Ramp) & 楔形(Wedge) 共享五面切割算法
-    // ==========================================================
     if (type === 'ramp' || type === 'wedge') {
-
-      // 核心差异：斜坡的尖端靠右侧，楔形的尖端居中
+      // 尖端位置：斜坡靠右，楔形居中
       const topX = (type === 'ramp') ? hx : 0;
 
-      // 定义 6 个核心控制点 (Three.js 本地轴)
+      // 构建 6 个基准顶点 (匹配 _createGeometry 内部逻辑)
       localVerts = [
         new THREE.Vector3(-hx, -hy, -hz), // 0: 底-左-后
         new THREE.Vector3( hx, -hy, -hz), // 1: 底-右-后
@@ -66,19 +63,15 @@ export class MapExporter {
         new THREE.Vector3(topX,  hy,  hz), // 5: 顶-脊-前
       ]
 
-      // 精确的 5 面索引 (基于 J.A.C.K. 逆向推导，绝对向外不交叉)
+      // 完美的 5 面切割（J.A.C.K 顺时针原则反推）
       faces = [
-        { name: 'Front (-Y)',   i: [1, 0, 2], u: '[ 1 0 0 0 ]', v: '[ 0 0 -1 0 ]' },
-        { name: 'Back (+Y)',    i: [3, 4, 5], u: '[ 1 0 0 0 ]', v: '[ 0 0 -1 0 ]' },
-        { name: 'Bottom (-Z)',  i: [4, 3, 1], u: '[ 1 0 0 0 ]', v: '[ 0 -1 0 0 ]' },
-        { name: 'Right Slant',  i: [5, 4, 2], u: '[ 0 1 0 0 ]', v: '[ 0 0 -1 0 ]' },
-        { name: 'Left Slant',   i: [2, 0, 5], u: '[ 0 1 0 0 ]', v: '[ 0 0 -1 0 ]' },
+        { name: 'Bottom (-Z)', i: [0, 4, 3], u: '[ 1 0 0 0 ]', v: '[ 0 -1 0 0 ]' },
+        { name: 'Back (+Y)',   i: [0, 2, 1], u: '[ 1 0 0 0 ]', v: '[ 0 0 -1 0 ]' },
+        { name: 'Front (-Y)',  i: [3, 4, 5], u: '[ 1 0 0 0 ]', v: '[ 0 0 -1 0 ]' },
+        { name: 'Left Slant',  i: [0, 5, 2], u: '[ 0 1 0 0 ]', v: '[ 0 0 -1 0 ]' },
+        { name: 'Right Slant', i: [1, 2, 5], u: '[ 0 1 0 0 ]', v: '[ 0 0 -1 0 ]' },
       ]
-    }
-    // ==========================================================
-    // ★ 基础方块逻辑：立方体(Cube) 标准六面切割算法
-    // ==========================================================
-    else {
+    } else {
       localVerts = [
         new THREE.Vector3(-hx, -hy, -hz), // 0
         new THREE.Vector3( hx, -hy, -hz), // 1
@@ -100,7 +93,7 @@ export class MapExporter {
       ]
     }
 
-    // 2. 映射到 GoldSrc 坐标系 (Y/Z 互换)
+    // 2. 映射并取整为 GoldSrc 世界坐标 (Z为上，Y为深)
     const v = localVerts.map(vert => {
       const w = vert.clone().applyMatrix4(dummy.matrix)
       return {
@@ -113,7 +106,6 @@ export class MapExporter {
     const textureName = block.texture || 'AAATRIGGER'
     const lines = ['{']
 
-    // 3. 写入面数据
     for (const face of faces) {
       const p1 = v[face.i[0]]
       const p2 = v[face.i[1]]
@@ -142,4 +134,77 @@ export class MapExporter {
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
   }
+
+// 追加在 MapExporter 类的末尾
+  /**
+   * 逆向解析：将 .map 文本读取为网页的 Blocks 数据
+   * @param {string} mapText - .map 文件的文本内容
+   */
+  static parse(mapText) {
+    const blocks = []
+
+    // 正则表达式：抓取 worldspawn 内部大括号 {} 括起来的每个 Brush (实体)
+    const solidMatches = mapText.match(/\{\s*(\(.*?\).*?)+\}/gs)
+    if (!solidMatches) return []
+
+    for (const solidStr of solidMatches) {
+      // 提取该实体所有的坐标点 ( x y z )
+      const pointRegex = /\(\s*(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s*\)/g
+      let match
+      const points = []
+
+      // 统计面数（多少个面就是多少行）
+      const faces = solidStr.match(/\(.*?\).*?\[.*?\]/g)
+      if (!faces) continue
+      const faceCount = faces.length
+
+      while ((match = pointRegex.exec(solidStr)) !== null) {
+        points.push({
+          x: parseFloat(match[1]),      // GoldSrc X -> Web X
+          y: parseFloat(match[3]),      // GoldSrc Z -> Web Y (高度)
+          z: parseFloat(match[2])       // GoldSrc Y -> Web Z (深度)
+        })
+      }
+
+      if (points.length === 0) continue
+
+      // 计算包围盒 (找出 X, Y, Z 的最大值和最小值)
+      let minX = Infinity, minY = Infinity, minZ = Infinity
+      let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity
+
+      for (const p of points) {
+        if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+        if (p.z < minZ) minZ = p.z; if (p.z > maxZ) maxZ = p.z;
+      }
+
+      // 逆推物理尺寸
+      const width = maxX - minX
+      const height = maxY - minY
+      const depth = maxZ - minZ
+
+      // 逆推中心点坐标
+      const cx = minX + width / 2
+      const cy = minY + height / 2
+      const cz = minZ + depth / 2
+
+      // 根据面数逆推图形类型
+      let type = 'cube'
+      if (faceCount === 5) {
+        type = 'wedge' // 对于简单的解析器，5个面统一定为楔形
+      }
+
+      blocks.push({
+        id: 'block_' + Math.random().toString(36).substr(2, 9),
+        type: type,
+        position: { x: cx, y: cy, z: cz },
+        scale: { x: width, y: depth, z: height }, // x:宽, y:深(长), z:高
+        rotation: { x: 0, y: 0, z: 0 },
+        color: '#607d8b' // 导入的默认颜色
+      })
+    }
+
+    return blocks
+  }
+
 }
