@@ -191,30 +191,31 @@ export class ViewportManager {
         : this.sideCamera
 
       // ==========================================================
-      // ★ 核心修复：防止任何视图（单视图/四视图）发生网格拉伸变形
+      // ★ 根据当前渲染的视口，动态隐藏/显示网格
       // ==========================================================
+      // if (this.sm.gridHelpers) {
+      //   for (const grid of this.sm.gridHelpers) {
+      //     // 只有非透视(非自由)视角，才显示密集网格
+      //     grid.visible = (name !== 'perspective')
+      //   }
+      // }
+
+      // 防止任何视图发生网格拉伸变形
       const aspect = vp.w / vp.h
-
       if (camera.isOrthographicCamera) {
-        // 1. 获取当前相机的高度一半（保持用户滚轮缩放的比例不丢失）
         const halfH = (camera.top - camera.bottom) / 2
-        // 2. 根据视口真实的宽高比，重新计算相机的宽度
         const halfW = halfH * aspect
-
-        // 3. 只有当尺寸确实改变时才更新矩阵（优化性能）
         if (camera.right !== halfW) {
           camera.left = -halfW
           camera.right = halfW
           camera.updateProjectionMatrix()
         }
       } else if (camera.isPerspectiveCamera) {
-        // 顺手保证透视相机在单/四视图切换时也绝不拉伸
         if (camera.aspect !== aspect) {
           camera.aspect = aspect
           camera.updateProjectionMatrix()
         }
       }
-      // ==========================================================
 
       // 仅在当前激活视口显示 TransformControls
       const tc = this.sm.transformControls

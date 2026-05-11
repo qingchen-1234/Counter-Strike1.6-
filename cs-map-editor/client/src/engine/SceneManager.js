@@ -53,10 +53,19 @@ export class SceneManager {
     this._rebuildGrids()
   }
 
+// ---- 优化：创建不遮挡模型、覆盖全图的网格 ----
   _createGridHelper(color1 = '#333355', color2 = '#222244') {
-    const range = Math.max(2048, (this.camera?.position.length() || 0) * 2)
+    // 1. 设置巨大的固定范围。CS 1.6 的最大地图边界为 8192，所以 16384 可以完美覆盖整个世界
+    const range = 16384
     const divisions = Math.floor(range / this.currentGridSize)
-    return new THREE.GridHelper(range, divisions, color1, color2)
+    const grid = new THREE.GridHelper(range, divisions, color1, color2)
+
+    // 2. 材质优化：解决网格遮挡方块的问题
+    grid.material.transparent = true
+    grid.material.opacity = 0.35     // 调低透明度，让它变成较暗的辅助线
+    grid.material.depthWrite = false // ★ 核心：关闭深度写入，这意味着网格永远不会在物理上“挡住”后面的方块
+
+    return grid
   }
 
   _rebuildGrids() {
@@ -165,29 +174,36 @@ export class SceneManager {
     this.scene.add(dirLight)
   }
 
+  // ---- 参考网格与坐标轴 ----
   _setupGrid() {
     this._rebuildGrids()
 
-    const axisLen = 1024
+    // 让红绿蓝三根中心坐标轴也贯穿整个世界
+    const axisLen = 8192
+
+    // 给坐标轴也加上 depthWrite: false，防止遮挡中心点的细小方块
     const xAxis = new THREE.Line(
       new THREE.BufferGeometry().setFromPoints([
         new THREE.Vector3(-axisLen, 0, 0), new THREE.Vector3(axisLen, 0, 0)
       ]),
-      new THREE.LineBasicMaterial({ color: '#ff4444', opacity: 0.3, transparent: true })
+      new THREE.LineBasicMaterial({ color: '#ff4444', opacity: 0.4, transparent: true, depthWrite: false })
     )
     const yAxis = new THREE.Line(
       new THREE.BufferGeometry().setFromPoints([
         new THREE.Vector3(0, -axisLen, 0), new THREE.Vector3(0, axisLen, 0)
       ]),
-      new THREE.LineBasicMaterial({ color: '#44ff44', opacity: 0.3, transparent: true })
+      new THREE.LineBasicMaterial({ color: '#44ff44', opacity: 0.4, transparent: true, depthWrite: false })
     )
     const zAxis = new THREE.Line(
       new THREE.BufferGeometry().setFromPoints([
         new THREE.Vector3(0, 0, -axisLen), new THREE.Vector3(0, 0, axisLen)
       ]),
-      new THREE.LineBasicMaterial({ color: '#4444ff', opacity: 0.3, transparent: true })
+      new THREE.LineBasicMaterial({ color: '#4444ff', opacity: 0.4, transparent: true, depthWrite: false })
     )
     this.scene.add(xAxis, yAxis, zAxis)
+
+    // 注意：xAxis, yAxis, zAxis 没有被加入 this.gridHelpers 数组
+    // 这恰好帮助我们实现了“自由视角隐藏网格，但保留坐标轴”的需求！
   }
 
   // ==========================================================
