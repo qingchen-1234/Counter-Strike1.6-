@@ -5,6 +5,8 @@
 
 import * as THREE from 'three'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
+// ★ 新增：引入凸包几何体生成器
+import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js'
 
 const GRID_SIZE = 16
 
@@ -418,7 +420,17 @@ export class SceneManager {
 
 // ---- 方块可视化 (支持多种几何体) ----
   _createGeometry(block) {
-    const { type, scale } = block
+    // 👇 修复：在这里加上 vertices
+    const { type, scale, vertices } = block
+
+    // ★ 核心：如果是导入的任意切割图形，直接利用保存的顶点生成凸包
+    if (type === 'custom' && vertices && vertices.length > 0) {
+      // 将普通对象点转为 Three.js 的 Vector3 向量
+      const points = vertices.map(v => new THREE.Vector3(v.x, v.y, v.z))
+      // 生成凸包几何体
+      return new ConvexGeometry(points)
+    }
+
     // 明确映射关系：X=宽, Y=深(长), Z=高
     const width = scale.x
     const depth = scale.y

@@ -63,70 +63,65 @@ export class SaveManager {
     })
   }
 
-  /**
-   * 核心逆向算法：将 .map 文本反算为网页的 Blocks 数据
+/**
+   * 核心逆向算法：将 .map 文本反算为网页的 Blocks 数据 (支持任意凸多边形)
    */
   static parseMapText(mapText) {
     const blocks = []
-    // 正则匹配大括号内包含坐标的 Brush 区块
     const brushRegex = /\{([^{}]*\(\s*-?[\d.]+\s+-?[\d.]+\s+-?[\d.]+\s*\)[^{}]*)\}/g
     let match
 
     while ((match = brushRegex.exec(mapText)) !== null) {
       const brushContent = match[1]
-      const points = []
-      let faceCount = 0
-
-      // 统计面的数量 (包含 '(' 和 ')' 的行数)
-      const lines = brushContent.split('\n')
-      for (const line of lines) {
-        if (line.includes('(') && line.includes(')')) faceCount++
-      }
+      const rawPoints = []
 
       // 提取所有坐标点 ( J.A.C.K 坐标: X=左右, Y=深度, Z=高度 )
       const pointRegex = /\(\s*(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s*\)/g
       let ptMatch
       while ((ptMatch = pointRegex.exec(brushContent)) !== null) {
-        points.push({
-          x: parseFloat(ptMatch[1]), // JACK X
-          y: parseFloat(ptMatch[2]), // JACK Y (深度)
-          z: parseFloat(ptMatch[3])  // JACK Z (高度)
+        rawPoints.push({
+          x: parseFloat(ptMatch[1]), // JACK X -> Three X
+          y: parseFloat(ptMatch[3]), // JACK Z -> Three Y (高度)
+          z: parseFloat(ptMatch[2])  // JACK Y -> Three Z (深度)
         })
       }
 
-      if (points.length === 0) continue
+      if (rawPoints.length === 0) continue
 
       // 计算包围盒 (Bounding Box) 找出最大最小值
       let minX = Infinity, minY = Infinity, minZ = Infinity
       let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity
 
-      for (const p of points) {
+      for (const p of rawPoints) {
         if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
         if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
         if (p.z < minZ) minZ = p.z; if (p.z > maxZ) maxZ = p.z;
       }
 
-      // 根据极值算出方块的物理尺寸
       const width = maxX - minX
-      const depth = maxY - minY
-      const height = maxZ - minZ
+      const height = maxY - minY
+      const depth = maxZ - minZ
 
-      // 算出方块的中心点
+      // 算出方块的世界中心点
       const cx = minX + width / 2
-      const cy = minY + depth / 2
-      const cz = minZ + height / 2
+      const cy = minY + height / 2
+      const cz = minZ + depth / 2
 
-      // 根据面数推断形状：6 面是正方体，5 面是楔形
-      let type = 'cube'
-      if (faceCount === 5) type = 'wedge'
+      // ★ 核心转换：将世界坐标点转换为相对于中心点的局部坐标 (Local Vertices)
+      const localVertices = rawPoints.map(p => ({
+        x: p.x - cx,
+        y: p.y - cy,
+        z: p.z - cz
+      }))
 
       blocks.push({
         id: 'block_' + Math.random().toString(36).substr(2, 9),
-        type: type,
-        position: { x: cx, y: cy, z: cz }, // 完美对应你的数据层: y=深度, z=高度
-        scale: { x: width, y: depth, z: height },
+        type: 'custom', // ★ 抛弃死板的预设类型，标记为自定义几何体
+        vertices: localVertices, // ★ 保存决定形状的灵魂顶点
+        position: { x: cx, y: cz, z: cy }, // 对应你的UI: y=深度, z=高度
+        scale: { x: width, y: depth, z: height }, // 仅用作 UI 属性面板展示
         rotation: { x: 0, y: 0, z: 0 },
-        color: '#607d8b', // 导入时给予一个默认颜色
+        color: '#607d8b',
         texture: 'AAATRIGGER'
       })
     }
