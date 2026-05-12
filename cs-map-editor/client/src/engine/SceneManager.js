@@ -503,11 +503,15 @@ renderBlock(block) {
     mesh.position.set(block.position.x, block.position.z, block.position.y)
     mesh.castShadow = true
     mesh.receiveShadow = true
+
+    // ★ 核心修复 1：把方块的“全部基因”存在 mesh.userData 里，死死记住！
     mesh.userData.blockId = block.id
     mesh.userData.originalColor = originalColor
     mesh.userData.blockType = block.type || 'cube'
+    mesh.userData.texture = block.texture || 'AAATRIGGER'
+    // ★ 漏掉的在这里：必须保留自定义顶点，否则异形图形刷新后变回正方体！
+    mesh.userData.vertices = block.vertices || null
 
-    // ★ 新增：将初始物理尺寸存入 userData 中，作为后续拉伸的基准计算值
     mesh.userData.baseScale = { x: block.scale.x, y: block.scale.y, z: block.scale.z }
 
     if (block.rotation) {
@@ -527,11 +531,13 @@ updateBlockMesh(id, position, scale, rotation) {
     if (position) mesh.position.set(position.x, position.z, position.y)
     if (scale) {
       mesh.geometry.dispose()
-      const blockType = mesh.userData.blockType || 'cube'
-      // 重新生成拥有绝对物理尺寸的几何体
-      mesh.geometry = this._createGeometry({ type: blockType, scale })
 
-      // ★ 新增：更新基准尺寸，并将网格的缩放倍率归零复位，防止无限变大
+      const blockType = mesh.userData.blockType || 'cube'
+      // ★ 核心修复 2：重建时，把保存的顶点原封不动地喂进去
+      const vertices = mesh.userData.vertices
+
+      mesh.geometry = this._createGeometry({ type: blockType, scale, vertices })
+
       mesh.userData.baseScale = { x: scale.x, y: scale.y, z: scale.z }
       mesh.scale.set(1, 1, 1)
     }
@@ -550,14 +556,31 @@ syncBlockFromMesh(blockId) {
 
     const base = mesh.userData.baseScale || { x: 64, y: 64, z: 64 }
 
+    // ★ 体验神级优化：如果异形方块被拉伸了，我们将拉伸永久“烙印”到内存的顶点坐标里！
+    // 这样导出的 .map 将完美拥有缩放后的全新体积！
+    let newVertices = mesh.userData.vertices
+    if (newVertices && (mesh.scale.x !== 1 || mesh.scale.y !== 1 || mesh.scale.z !== 1)) {
+      newVertices = newVertices.map(v => ({
+        x: v.x * mesh.scale.x,
+        y: v.y * mesh.scale.y, // Web Y 对应 Three 的 Y
+        z: v.z * mesh.scale.z  // Web Z 对应 Three 的 Z
+      }))
+      mesh.userData.vertices = newVertices // 永久更新内存里的顶点
+    }
+
+    // ★ 核心修复 3：同步时必须把所有属性原封不动发给服务器 (特别是 type 和 vertices)
     return {
+      id: blockId,
+      type: mesh.userData.blockType,
+      color: mesh.userData.originalColor,
+      texture: mesh.userData.texture,
+      vertices: newVertices, // ★ 发送顶点数据！
       position: { x: mesh.position.x, y: mesh.position.z, z: mesh.position.y },
       rotation: {
         x: THREE.MathUtils.radToDeg(mesh.rotation.x),
         y: THREE.MathUtils.radToDeg(mesh.rotation.z),
         z: THREE.MathUtils.radToDeg(mesh.rotation.y)
       },
-      // ★ 新增：将 相对拉伸率 * 基准尺寸 还原为绝对尺寸，输出给导出器！
       scale: {
         x: Math.round(base.x * mesh.scale.x),
         y: Math.round(base.y * mesh.scale.y),

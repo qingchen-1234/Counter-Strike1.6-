@@ -119,10 +119,8 @@ npm run dev
 |------|------|------|--------|
 | `cube` | 立方体 | 🟫 | BoxGeometry |
 | `ramp` | 斜坡 | 📐 | ExtrudeGeometry (三角形截面) |
-| `stairs` | 楼梯 | 🪜 | 4 阶 BoxGeometry 组合 |
 | `wedge` | 楔形 | 🔺 | ExtrudeGeometry (直角三角形) |
 | `cylinder` | 圆柱 | 🫙 | CylinderGeometry (16 边) |
-| `plane` | 平面 | ⬜ | BoxGeometry (高度 2) |
 
 ## 网格吸附单位
 
