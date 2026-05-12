@@ -68,51 +68,31 @@ export class BlockManager {
     return block
   }
 
-  createBlock(data, isLocal = false) {
+  createBlock(data) {
     const block = {
+      // ★ 核心修复 1：利用 ...data 展开语法，保留服务器发来的所有未知属性
+      ...data,
       id: data.id,
-      type: data.type || 'cube',
       position: data.position || { x: 0, y: 0, z: 0 },
-      scale: data.scale || { ...DEFAULT_SCALE },
+      scale: data.scale || { x: 64, y: 64, z: 64 },
       rotation: data.rotation || { x: 0, y: 0, z: 0 },
-      color: data.color || this._randomGrayColor(),
-      texture: data.texture || 'AAATRIGGER',
-      createdAt: data.createdAt || Date.now(),
-      creator: data.creator || '',
-      lockedBy: data.lockedBy || null,
-      tags: data.tags || []
+      type: data.type || 'cube',
+
+      // ★ 核心修复 2：显式声明接收自定义顶点和贴图
+      vertices: data.vertices || null,
+      texture: data.texture || 'AAATRIGGER'
     }
     this.blocks.set(block.id, block)
     return block
   }
 
-  // ---- 更新方块 ----
-  updateBlock(id, { position, scale, rotation, color, texture }) {
+  updateBlock(id, data) {
     const block = this.blocks.get(id)
-    if (!block) return null
-    if (position) {
-      block.position = {
-        x: this._snap(position.x),
-        y: this._snap(position.y),
-        z: this._snap(position.z)
-      }
+    if (block) {
+      // ★ 核心修复 3：绝对不要手动 block.position = data.position 这样赋值
+      // 使用 Object.assign 强行把发来的所有新字段覆盖上去！
+      Object.assign(block, data)
     }
-    if (scale) {
-      block.scale = {
-        x: this._snap(scale.x),
-        y: this._snap(scale.y),
-        z: this._snap(scale.z)
-      }
-    }
-    if (rotation) {
-      block.rotation = {
-        x: this._snapRotation(rotation.x),
-        y: this._snapRotation(rotation.y),
-        z: this._snapRotation(rotation.z)
-      }
-    }
-    if (color !== undefined) block.color = color
-    if (texture !== undefined) block.texture = texture
     return block
   }
 

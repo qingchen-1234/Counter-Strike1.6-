@@ -151,27 +151,17 @@ export class SocketClient {
   }
 
   // ---- 方块操作 ----
-  sendBlockCreate(block) {
-    this.socket.emit('block:create', {
-      id: block.id,
-      type: block.type || 'cube',
-      position: block.position,
-      scale: block.scale,
-      rotation: block.rotation || { x: 0, y: 0, z: 0 },
-      color: block.color,
-      texture: block.texture || 'AAATRIGGER',
-      tags: block.tags || []
-    })
+  // 创建方块
+  sendBlockCreate(blockData) {
+    // ★ 凶手可能在这里：绝对不要手动写 { id: block.id, position:... }
+    // 直接把完整的 blockData 传过去，保留它的 vertices 和 type！
+    this.socket.emit('block:create', blockData);
   }
 
+  // 更新方块
   sendBlockUpdate(id, data) {
-    this._pendingUpdate = { id, ...data }
-    if (!this._updateThrottle) {
-      this._sendThrottledUpdate()
-      this._updateThrottle = setInterval(() => {
-        this._sendThrottledUpdate()
-      }, this._throttleInterval)
-    }
+    // 同样，直接原封不动地发过去
+    this.socket.emit('block:update', id, data);
   }
 
   _sendThrottledUpdate() {

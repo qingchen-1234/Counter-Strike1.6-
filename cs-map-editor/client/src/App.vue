@@ -347,11 +347,19 @@ function onDeleteBlock() {
 function onUpdateBlock(data) {
   if (!selectedBlock.value) return
   const id = selectedBlock.value.id
+
+  // 先更新本地
   blockManager.updateBlock(id, data)
   sceneManager.updateBlockMesh(id, data.position, data.scale, data.rotation)
+
+  // 同步给服务器
   const sc = socketClient.value
   if (sc?.isInRoom()) {
-    sc.sendBlockUpdate(id, data)
+    // ★ 关键：不要只发局部 data，从 SceneManager 提取方块的“完整最新基因”发送
+    const fullData = sceneManager.syncBlockFromMesh(id)
+    if (fullData) {
+      sc.sendBlockUpdate(id, fullData)
+    }
   }
 }
 

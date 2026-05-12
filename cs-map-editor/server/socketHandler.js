@@ -129,48 +129,40 @@ function handleSocket(io, socket, rooms) {
 
   // ==================== 方块 CRUD 同步 ====================
 
-  // 创建方块
+  // 1. 创建方块
   socket.on('block:create', (blockData) => {
+    // 【修复1】获取当前所在的房间
     const room = getRoom(socket, rooms);
     if (!room) return;
 
-    const block = {
-      id: blockData.id,
-      type: blockData.type || 'cube',
-      position: blockData.position,
-      scale: blockData.scale,
-      rotation: blockData.rotation || { x: 0, y: 0, z: 0 },
-      color: blockData.color || '#888888',
-      texture: blockData.texture || 'AAATRIGGER',
-      creator: socket.id,
-      createdAt: blockData.createdAt || Date.now(),
-      lockedBy: null,
-      tags: blockData.tags || []
-    };
-    room.blocks.set(block.id, block);
+    // 【修复2】使用 Map.set 保存完整的方块数据 (包括 type, vertices 等全部基因)
+    room.blocks.set(blockData.id, blockData);
 
-    io.in(socket.data.roomId).emit('block:created', block);
+    // 广播给房间里的其他玩家 (如果有这个需求的话)
+    socket.to(socket.data.roomId).emit('block:created', blockData);
   });
 
-  // 更新方块
-  socket.on('block:update', (data) => {
-    const room = getRoom(socket, rooms);
-    if (!room) return;
-    if (!room.blocks.has(data.id)) return;
-
-    // 检查锁
-    if (room.locks.has(data.id) && room.locks.get(data.id) !== socket.id) {
-      socket.emit('block:locked', { id: data.id, lockedBy: room.locks.get(data.id) });
-      return;
+  // 2. 更新方块
+  socket.on('block:update', (id, data) => {
+    // 兼容防错：某些情况下前端可能把 id 和 data 封装在一个对象里传过来
+    if (typeof id === 'object') {
+      data = id;
+      id = data.id;
     }
 
-    const block = room.blocks.get(data.id);
-    if (data.position) block.position = data.position;
-    if (data.scale) block.scale = data.scale;
-    if (data.rotation) block.rotation = data.rotation;
-    if (data.color !== undefined) block.color = data.color;
+    // 【修复1】获取当前所在的房间
+    const room = getRoom(socket, rooms);
+    if (!room) return;
 
-    socket.to(socket.data.roomId).emit('block:updated', data);
+    // 【修复2】使用 Map.get 查找方块
+    let block = room.blocks.get(id);
+    if (block) {
+        // 【修复3】使用 Object.assign 将前端发来的所有数据无损合并覆盖！
+        Object.assign(block, data);
+
+        // 广播给房间里的其他玩家
+        socket.to(socket.data.roomId).emit('block:updated', data);
+    }
   });
 
   // 删除方块

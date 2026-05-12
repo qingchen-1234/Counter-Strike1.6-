@@ -140,7 +140,9 @@ export class SaveManager {
       blocks: blocks.map(b => ({
         id: b.id, type: b.type || 'cube', position: b.position, scale: b.scale,
         rotation: b.rotation || { x: 0, y: 0, z: 0 }, color: b.color,
-        texture: b.texture || 'AAATRIGGER', tags: b.tags || []
+        texture: b.texture || 'AAATRIGGER',
+        vertices: b.vertices || null, // ★ 这里必须加上！
+        tags: b.tags || []
       }))
     }
     return JSON.stringify(data, null, 2)
