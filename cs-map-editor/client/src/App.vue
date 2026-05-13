@@ -104,7 +104,7 @@ import PropertiesPanel from './components/PropertiesPanel.vue'
 import { SceneManager } from './engine/SceneManager.js'
 import { BlockManager, BLOCK_TYPES } from './engine/BlockManager.js'
 import { SocketClient } from './network/SocketClient.js'
-import { SaveManager } from './engine/SaveManager.js'
+import { MapImporter } from './engine/MapImporter.js'
 import { ViewportManager, VIEW_MODES } from './engine/ViewportManager.js'
 
 // ---- 核心实例 ----
@@ -400,7 +400,7 @@ function doSaveMap() {
 
   try {
     // 无论在线还是离线，只执行本地下载，不再向服务器发送存储请求！
-    SaveManager.downloadLocalMap(blocks, mapName)
+    MapImporter.downloadLocalMap(blocks, mapName)
     lastSavedFilename = mapName + '.map'
 
     showSaveDialog.value = false
@@ -426,7 +426,7 @@ async function onFileSelected(event) {
 
   try {
     // 强制使用我们新写的解析器读取 .map
-    const data = await SaveManager.readLocalMap(file)
+    const data = await MapImporter.readLocalMap(file)
     loadDataIntoScene(data)
     lastSavedFilename = file.name
   } catch (err) {
