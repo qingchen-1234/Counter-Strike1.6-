@@ -4,10 +4,12 @@
     <Toolbar
       :is-in-room="isInRoom"
       :grid-size="currentGridSize"
+      :map-name="currentMapName"
+      :is-dirty="isDirty"
       @add-block="onAddBlock"
       @delete-block="onDeleteBlock"
       @export-map="onExportMap"
-      @load-map="onLoadMap"
+      @request-load="onRequestLoadMap"
       @update-grid-size="onUpdateGridSize"
     />
 
@@ -76,17 +78,31 @@
       />
     </div>
 
-    <!-- 保存命名对话框 (已合并保存与导出) -->
+    <!-- 保存命名对话框 -->
     <div v-if="showSaveDialog" class="modal-overlay" @click.self="showSaveDialog = false">
       <div class="modal-box">
         <h4>💾 保存 / 导出地图</h4>
         <label>地图名称</label>
         <input v-model="saveForm.mapName" placeholder="如 my_kz_map" maxlength="30" />
         <label class="hint-label">格式: .map (J.A.C.K / Hammer 标准格式)</label>
-        <div class="save-info">房间: {{ saveForm.roomId || '离线' }} · 方块: {{ blockManager.getAllBlocks().length }}</div>
+        <div class="save-info">状态: {{ isInRoom ? '协作中' : '单机模式' }} · 方块: {{ blockManager.getAllBlocks().length }}</div>
         <div class="modal-btns">
           <button class="modal-btn cancel" @click="showSaveDialog = false">取消</button>
           <button class="modal-btn confirm" @click="doSaveMap" :disabled="!saveForm.mapName">生成文件</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ★ 新增：未保存拦截弹窗 -->
+    <div v-if="showUnsavedDialog" class="modal-overlay" @click.self="showUnsavedDialog = false">
+      <div class="modal-box warning-box">
+        <h4>⚠️ 未保存提示</h4>
+        <p>您当前编辑的地图 <strong>{{ currentMapName }}</strong> 有未保存的更改。</p>
+        <p class="warning-sub">继续打开新地图将丢失这些更改，是否先保存？</p>
+        <div class="modal-btns vertical-btns">
+          <button class="modal-btn confirm" @click="handleUnsaved('save')">保存并打开</button>
+          <button class="modal-btn danger" @click="handleUnsaved('discard')">放弃更改，直接打开</button>
+          <button class="modal-btn cancel" @click="handleUnsaved('cancel')">取消操作</button>
         </div>
       </div>
     </div>
@@ -123,16 +139,23 @@ const currentTypeName = computed(() => BLOCK_TYPES[selectedBlockType.value]?.nam
 const viewMode = ref('quad')
 const viewModes = VIEW_MODES
 
-// ---- 保存/读取 ----
+// ---- 保存/读取及文件状态 ----
 const showSaveDialog = ref(false)
-const showLoadDialog = ref(false)
+const showUnsavedDialog = ref(false) // 控制未保存提示
 const saveForm = ref({ mapName: '', roomId: '' })
-const loadFiles = ref([])
 const fileInputRef = ref(null)
-let lastSavedFilename = ''
 
-// ★ 新增：用于存放导入时的 .map 无损原稿缓存
+let lastSavedFilename = ''
 let currentMapDocument = null
+
+// ★ 文件状态管理核心
+const currentMapName = ref('未命名地图')
+const isDirty = ref(false)
+
+// 标记：如果修改了场景，则设为脏状态
+function markDirty() {
+  isDirty.value = true
+}
 
 // ---- 响应式状态 ----
 const viewportRef = ref(null)
@@ -170,6 +193,14 @@ provide('blockManager', blockManager)
 provide('socketClient', socketClient)
 
 onMounted(() => {
+  // ★ 网页防关闭保护
+  window.addEventListener('beforeunload', (e) => {
+    if (isDirty.value) {
+      e.preventDefault()
+      e.returnValue = '您有未保存的更改，确定要离开吗？'
+    }
+  })
+
   const canvas = document.getElementById('three-canvas')
   const viewport = viewportRef.value
   sceneManager.init(canvas, viewport)
@@ -189,6 +220,7 @@ onMounted(() => {
   sceneManager.onBlockMoved = (blockId, data) => {
     editingBlockId = blockId
     blockManager.updateBlock(blockId, data)
+    markDirty() // 标记更改
     if (selectedBlock.value?.id === blockId) {
       selectedBlock.value = blockManager.getBlock(blockId)
     }
@@ -307,8 +339,13 @@ function onRefreshRooms() {
   if (sc?.isConnected()) sc.requestRoomList()
 }
 
-function onRoomStateUpdated() {
+function onRoomStateUpdated(data) {
   isInRoom.value = true
+  if (data && data.roomName) {
+    currentMapName.value = data.roomName
+    isDirty.value = false // 刚进入房间，状态与服务器一致，不算脏
+    currentMapDocument = null // 联机时抛弃本地缓存原稿
+  }
 }
 
 function onSelectBlockType() { showBlockTypeSelector.value = true }
@@ -319,31 +356,32 @@ function confirmAddBlock() {
 }
 
 function doAddBlock(blockType) {
-  const sc = socketClient.value
-  const inRoom = sc?.isInRoom() || false
-  if (!inRoom) {
-    alert('离线模式下不能创建方块。请先加入房间。')
-    return
-  }
   const block = blockManager.createDefaultBlock(blockType)
   sceneManager.renderBlock(block)
-  sc?.sendBlockCreate(block)
+
+  markDirty() // 标记更改
+
+  const sc = socketClient.value
+  if (sc?.isInRoom()) {
+    sc.sendBlockCreate(block)
+  }
 }
 
 function onAddBlock() { showBlockTypeSelector.value = true }
 
 function onDeleteBlock() {
   if (!selectedBlock.value) return
-  const sc = socketClient.value
-  const inRoom = sc?.isInRoom() || false
-  if (!inRoom) {
-    alert('离线模式下不能删除方块。')
-    return
-  }
   const id = selectedBlock.value.id
+
   blockManager.deleteBlock(id)
   sceneManager.removeBlockMesh(id)
-  sc?.sendBlockDelete(id)
+
+  markDirty() // 标记更改
+
+  const sc = socketClient.value
+  if (sc?.isInRoom()) {
+    sc.sendBlockDelete(id)
+  }
   selectedBlock.value = null
 }
 
@@ -354,6 +392,8 @@ function onUpdateBlock(data) {
   // 先更新本地
   blockManager.updateBlock(id, data)
   sceneManager.updateBlockMesh(id, data.position, data.scale, data.rotation)
+
+  markDirty() // 标记更改
 
   // 同步给服务器
   const sc = socketClient.value
@@ -384,11 +424,8 @@ function onExportMap() {
     return
   }
 
-  // 提取之前的文件名，如果没有则生成默认名称
-  let defaultName = lastSavedFilename.replace('.map', '')
-  if (!defaultName) defaultName = 'my_map'
-
-  saveForm.value.mapName = defaultName
+  // 默认名称优先使用当前地图名
+  saveForm.value.mapName = currentMapName.value
   showSaveDialog.value = true
 }
 
@@ -404,22 +441,46 @@ function doSaveMap() {
   try {
     // ★ 将 currentMapDocument 传给导出器
     MapImporter.downloadLocalMap(blocks, mapName, currentMapDocument)
-    lastSavedFilename = mapName + '.map'
 
+    // 保存成功，更新状态
+    currentMapName.value = mapName
+    lastSavedFilename = mapName + '.map'
+    isDirty.value = false // ★ 刚保存完，去掉星星
     showSaveDialog.value = false
+
   } catch (err) {
     alert('导出出错: ' + err.message)
   }
 }
 
 // ==========================================================
-// ★ 纯本地化读取逻辑 (一步到位，拒绝多余弹窗)
+// ★ 拦截读取逻辑与弹窗控制
 // ==========================================================
-function onLoadMap() {
-  // 点击“打开”按钮时，直接触发隐藏的文件选择器
-  if (fileInputRef.value) {
-    fileInputRef.value.click()
+function onRequestLoadMap() {
+  // 如果当前地图做过修改，拦截它！
+  if (isDirty.value) {
+    showUnsavedDialog.value = true
+  } else {
+    executeLoadMap()
   }
+}
+
+function handleUnsaved(action) {
+  showUnsavedDialog.value = false
+  if (action === 'save') {
+    // 自动调用导出
+    onExportMap()
+    // 注意：浏览器安全限制无法在下载后自动弹文件选择器,
+    // 这里我们重置脏状态，用户保存后需再点一次打开。
+    isDirty.value = false
+  } else if (action === 'discard') {
+    executeLoadMap()
+  }
+  // cancel 则什么都不做
+}
+
+function executeLoadMap() {
+  if (fileInputRef.value) fileInputRef.value.click()
 }
 
 // 核心：处理本地上传的 .map 文件
@@ -429,11 +490,14 @@ async function onFileSelected(event) {
 
   try {
     const data = await MapImporter.readLocalMap(file)
-    // ★ 接收原稿缓存！
     currentMapDocument = data.mapDoc
-
     loadDataIntoScene(data)
-    lastSavedFilename = file.name
+
+    // 重置状态为全新
+    currentMapName.value = data.mapName
+    lastSavedFilename = data.mapName + '.map'
+    isDirty.value = false // 新加载的地图还没被修改
+
   } catch (err) {
     console.error(err)
     alert('读取 .map 文件失败: ' + err.message)
@@ -548,4 +612,9 @@ function onMirrorBlock(axis) {
 .file-card:hover { border-color: #e94560; }
 .file-info { color: #666; font-size: 10px; }
 .empty-list { padding: 16px; text-align: center; color: #555; font-size: 12px; }
+.warning-box p { color: #ccc; font-size: 13px; margin-bottom: 8px; line-height: 1.4; }
+.warning-box .warning-sub { color: #888; font-size: 11px; margin-bottom: 16px; }
+.vertical-btns { flex-direction: column; gap: 8px; }
+.modal-btn.danger { background: #e94560; color: white; }
+.modal-btn.confirm { background: #4a9eff; color: white; }
 </style>
