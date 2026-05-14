@@ -1,3 +1,5 @@
+//RoomPanel.vue
+
 <template>
   <div class="room-panel" :class="{ collapsed: minimized }">
     <div v-if="minimized" class="expand-btn" @click="minimized = false">👥</div>

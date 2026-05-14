@@ -1,3 +1,5 @@
+//Toolbar.vue
+
 <template>
   <div class="toolbar">
     <span class="logo">🧱 CSMapCollab</span>

@@ -131,6 +131,9 @@ const loadFiles = ref([])
 const fileInputRef = ref(null)
 let lastSavedFilename = ''
 
+// ★ 新增：用于存放导入时的 .map 无损原稿缓存
+let currentMapDocument = null
+
 // ---- 响应式状态 ----
 const viewportRef = ref(null)
 const roomPanelRef = ref(null)
@@ -399,8 +402,8 @@ function doSaveMap() {
   const blocks = blockManager.getAllBlocks()
 
   try {
-    // 无论在线还是离线，只执行本地下载，不再向服务器发送存储请求！
-    MapImporter.downloadLocalMap(blocks, mapName)
+    // ★ 将 currentMapDocument 传给导出器
+    MapImporter.downloadLocalMap(blocks, mapName, currentMapDocument)
     lastSavedFilename = mapName + '.map'
 
     showSaveDialog.value = false
@@ -425,15 +428,16 @@ async function onFileSelected(event) {
   if (!file) return
 
   try {
-    // 强制使用我们新写的解析器读取 .map
     const data = await MapImporter.readLocalMap(file)
+    // ★ 接收原稿缓存！
+    currentMapDocument = data.mapDoc
+
     loadDataIntoScene(data)
     lastSavedFilename = file.name
   } catch (err) {
     console.error(err)
-    alert('读取 .map 文件失败，可能文件损坏或包含了不支持的异形几何体。')
+    alert('读取 .map 文件失败: ' + err.message)
   }
-  // 重置 input，允许重复选中同一个文件
   event.target.value = ''
 }
 

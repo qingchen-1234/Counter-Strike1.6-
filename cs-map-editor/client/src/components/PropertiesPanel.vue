@@ -1,3 +1,5 @@
+//PropertiesPanel.vue
+
 <template>
   <div class="props-panel">
     <div v-if="!selectedBlock" class="empty-state">
