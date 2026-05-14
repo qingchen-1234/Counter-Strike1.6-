@@ -6,11 +6,15 @@
       :grid-size="currentGridSize"
       :map-name="currentMapName"
       :is-dirty="isDirty"
+      :is-snap-enabled="isSnapEnabled"
       @add-block="onAddBlock"
       @delete-block="onDeleteBlock"
       @export-map="onExportMap"
       @request-load="onRequestLoadMap"
       @update-grid-size="onUpdateGridSize"
+      @toggle-snap="onToggleSnap"
+      @open-settings="showSettingsModal = true"
+      @open-help="showHelpModal = true"
     />
 
     <!-- 主区域: 3D场景 + 侧边栏 -->
@@ -62,11 +66,8 @@
           </div>
         </div>
 
-        <div class="viewport-hint">
-          WASD | 右键/中键旋转 | 滚轮缩放 | Shift加速 | 左键选中 | Tab切换
-          <span v-if="!isInRoom" class="offline-badge">离线模式</span>
-        </div>
       </div>
+    <!-- </div> -->
 
       <!-- 属性面板 (右侧) -->
       <PropertiesPanel
@@ -104,6 +105,42 @@
           <button class="modal-btn danger" @click="handleUnsaved('discard')">放弃更改，直接打开</button>
           <button class="modal-btn cancel" @click="handleUnsaved('cancel')">取消操作</button>
         </div>
+      </div>
+    </div>
+
+    <!-- ★ 帮助说明弹窗 -->
+    <div v-if="showHelpModal" class="modal-overlay" @click.self="showHelpModal = false">
+      <div class="modal-box help-box">
+        <h4>❓ 操作快捷键</h4>
+        <ul>
+          <li><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> 漫游视角/平移视图</li>
+          <li><kbd>右键</kbd> 拖拽旋转 3D 视角</li>
+          <li><kbd>滚轮</kbd> 向鼠标位置缩放</li>
+          <li><kbd>Shift</kbd> (按住) 加速移动</li>
+          <li><kbd>方向键</kbd> 精准微调选中方块 (Nudge)</li>
+          <li><kbd>G</kbd> 开启/关闭网格吸附</li>
+          <li><kbd>Tab</kbd> 在四视图中循环切换活动视口</li>
+          <li><kbd>左键</kbd> 选中场景中的方块进行编辑</li>
+        </ul>
+        <button class="modal-btn confirm" @click="showHelpModal = false">我知道了</button>
+      </div>
+    </div>
+
+    <!-- ★ 设置弹窗 -->
+    <div v-if="showSettingsModal" class="modal-overlay" @click.self="showSettingsModal = false">
+      <div class="modal-box">
+        <h4>⚙️ 编辑器设置</h4>
+        <div class="prop-section">
+          <label>移动速度 (WASD)</label>
+          <input type="range" min="100" max="5000" step="100" v-model="editorSettings.moveSpeed" @input="applySettings" />
+          <div class="range-val">{{ editorSettings.moveSpeed }}</div>
+        </div>
+        <div class="prop-section">
+          <label>鼠标灵敏度 (视角旋转)</label>
+          <input type="range" min="0.001" max="0.01" step="0.001" v-model="editorSettings.lookSpeed" @input="applySettings" />
+          <div class="range-val">{{ editorSettings.lookSpeed }}</div>
+        </div>
+        <button class="modal-btn confirm mt-3" @click="showSettingsModal = false">关闭</button>
       </div>
     </div>
 
@@ -163,6 +200,22 @@ const roomPanelRef = ref(null)
 const selectedBlock = ref(null)
 const isInRoom = ref(false)
 const currentGridSize = ref(16)
+const isSnapEnabled = ref(true)
+
+// 设置和帮助弹窗
+const showHelpModal = ref(false)
+const showSettingsModal = ref(false)
+const editorSettings = ref({
+  moveSpeed: 1500,
+  lookSpeed: 0.003
+})
+
+function applySettings() {
+  if (sceneManager) {
+    sceneManager.moveSpeed = Number(editorSettings.value.moveSpeed)
+    sceneManager.lookSensitivity = Number(editorSettings.value.lookSpeed)
+  }
+}
 
 const activeQuadLabel = computed(() => {
   const names = { perspective: '自由视角', top: '顶视图', front: '前视图', side: '侧视图' }
@@ -170,6 +223,12 @@ const activeQuadLabel = computed(() => {
 })
 
 let editingBlockId = null
+
+function onToggleSnap() {
+  isSnapEnabled.value = !isSnapEnabled.value
+  blockManager.setSnapEnabled(isSnapEnabled.value)
+  sceneManager.setSnapEnabled(isSnapEnabled.value)
+}
 
 function onViewModeChange(e) {
   const mode = e.target.value
@@ -232,9 +291,18 @@ onMounted(() => {
   }
 
   window.addEventListener('keydown', (e) => {
+    // 忽略在输入框中打字时的按键
+    if (['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return
+
+    // Tab 切换视图
     if (e.key === 'Tab' && viewportManager && viewportManager.viewMode === 'quad') {
       e.preventDefault()
       viewportManager.cycleActiveQuad()
+    }
+
+    // ★ 快捷键 G 切换吸附
+    if (e.key.toLowerCase() === 'g') {
+      onToggleSnap()
     }
   })
 })
@@ -533,6 +601,10 @@ function loadDataIntoScene(data) {
       sc.sendBlockCreate(blockData)
     }
   }
+
+  // ★ 核心：地图渲染完毕，立刻让镜头瞬移并全景聚焦！
+  sceneManager.focusOnMap(data.blocks)
+
   console.log(`[加载成功] 已从 .map 中恢复了 ${data.blocks.length} 个方块`)
 }
 
@@ -617,4 +689,10 @@ function onMirrorBlock(axis) {
 .vertical-btns { flex-direction: column; gap: 8px; }
 .modal-btn.danger { background: #e94560; color: white; }
 .modal-btn.confirm { background: #4a9eff; color: white; }
+/* 帮助弹窗 & 设置弹窗 */
+.help-box ul { list-style: none; padding: 0; margin: 0 0 16px; color: #ccc; font-size: 13px; line-height: 2; }
+.help-box kbd { background: #2a3b5c; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: #ffcc00; font-weight: bold; font-size: 11px; margin-right: 4px; box-shadow: 0 2px 0 #0f172a; }
+.mt-3 { margin-top: 16px; }
+input[type="range"] { width: 100%; cursor: pointer; accent-color: #e94560; }
+.range-val { text-align: right; font-size: 11px; color: #4a9eff; font-family: monospace; margin-top: 4px; }
 </style>

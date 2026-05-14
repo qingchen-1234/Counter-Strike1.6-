@@ -36,19 +36,47 @@ export class ViewportManager {
     this.canvasHeight = height
 
     const size = 1000
-    this.topCamera = new THREE.OrthographicCamera(-size, size, size, -size, 0.1, 20000)
-    this.topCamera.position.set(0, 2000, 0)
+    // ★ 把 20000 改为 60000
+    this.topCamera = new THREE.OrthographicCamera(-size, size, size, -size, 0.1, 60000)
+    this.topCamera.position.set(0, 30000, 0) // 高度也拉高
     this.topCamera.lookAt(0, 0, 0)
 
-    this.frontCamera = new THREE.OrthographicCamera(-size, size, size, -size, 0.1, 20000)
-    this.frontCamera.position.set(0, 0, 2000)
+    this.frontCamera = new THREE.OrthographicCamera(-size, size, size, -size, 0.1, 60000)
+    this.frontCamera.position.set(0, 0, 30000)
     this.frontCamera.lookAt(0, 0, 0)
 
-    this.sideCamera = new THREE.OrthographicCamera(-size, size, size, -size, 0.1, 20000)
-    this.sideCamera.position.set(2000, 0, 0)
+    this.sideCamera = new THREE.OrthographicCamera(-size, size, size, -size, 0.1, 60000)
+    this.sideCamera.position.set(30000, 0, 0)
     this.sideCamera.lookAt(0, 0, 0)
 
     this._updateViewports()
+  }
+
+  // ========== 全景聚焦 (瞬移并缩放相机以适应地图) ==========
+  focusOnMap(centerX, centerY, centerZ, maxDim) {
+    // 留出 20% 的边缘空白
+    const viewSize = maxDim * 1.2
+
+    // 1. 顶视图 (从上往下看)
+    this.topCamera.position.set(centerX, centerY + maxDim + 1000, centerZ)
+    this.topCamera.lookAt(centerX, centerY, centerZ)
+    this.topCamera.left = -viewSize; this.topCamera.right = viewSize
+    this.topCamera.top = viewSize; this.topCamera.bottom = -viewSize
+    this.topCamera.updateProjectionMatrix()
+
+    // 2. 前视图 (从前向后看, 沿着 Z 轴)
+    this.frontCamera.position.set(centerX, centerY, centerZ + maxDim + 1000)
+    this.frontCamera.lookAt(centerX, centerY, centerZ)
+    this.frontCamera.left = -viewSize; this.frontCamera.right = viewSize
+    this.frontCamera.top = viewSize; this.frontCamera.bottom = -viewSize
+    this.frontCamera.updateProjectionMatrix()
+
+    // 3. 侧视图 (从右向左看, 沿着 X 轴)
+    this.sideCamera.position.set(centerX + maxDim + 1000, centerY, centerZ)
+    this.sideCamera.lookAt(centerX, centerY, centerZ)
+    this.sideCamera.left = -viewSize; this.sideCamera.right = viewSize
+    this.sideCamera.top = viewSize; this.sideCamera.bottom = -viewSize
+    this.sideCamera.updateProjectionMatrix()
   }
 
   // ========== 视图模式 ==========

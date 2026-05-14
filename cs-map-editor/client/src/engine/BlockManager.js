@@ -32,6 +32,7 @@ export class BlockManager {
   constructor() {
     this.blocks = new Map()
     this.gridSize = GRID_SNAP
+    this.snapEnabled = true // ★ 新增
   }
 
   // ---- 网格大小管理 ----
@@ -43,6 +44,11 @@ export class BlockManager {
 
   getGridSize() {
     return this.gridSize
+  }
+
+  // ★ 新增方法
+  setSnapEnabled(enabled) {
+    this.snapEnabled = enabled
   }
 
   static getGridOptions() {
@@ -112,6 +118,9 @@ export class BlockManager {
 
   // ---- 网格吸附 ----
   _snap(value) {
+    // ★ 修改：如果不吸附，直接返回四舍五入后的整数 (BSP 编译器通常只接受整数坐标)
+    if (!this.snapEnabled) return Math.round(value)
+
     const gs = this.gridSize || GRID_SNAP
     return Math.round(value / gs) * gs
   }

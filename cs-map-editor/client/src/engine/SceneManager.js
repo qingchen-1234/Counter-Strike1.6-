@@ -30,13 +30,15 @@ export class SceneManager {
     this.raycaster = new THREE.Raycaster()
     this.mouse = new THREE.Vector2()
     this.keys = {}
-    this.moveSpeed = 300
+    this.moveSpeed = 1500 // ★ 默认速度从 300 提升到 1500，走得更快
     this.lookSpeed = 0.002
+    this.lookSensitivity = 0.003 // 鼠标灵敏度
     this.isRightDragging = false
     this.isLeftDragging = false
     this.isMiddleDragging = false
     this.prevMouse = { x: 0, y: 0 }
     this.currentGridSize = GRID_SIZE
+    this.isSnapEnabled = true
     this._getActiveCamera = null
     this._viewportManager = null
 
@@ -47,9 +49,17 @@ export class SceneManager {
   setActiveCameraFn(fn) { this._getActiveCamera = fn }
   setViewportManager(vm) { this._viewportManager = vm }
 
+  setSnapEnabled(enabled) {
+    this.isSnapEnabled = enabled
+    if (this.transformControls) {
+      this.transformControls.setTranslationSnap(enabled ? this.currentGridSize : null)
+    }
+  }
+
   updateGridSize(newSize) {
     this.currentGridSize = Math.max(1, Math.min(256, newSize))
-    if (this.transformControls) {
+    // ★ 只有在吸附开启时，才把网格大小喂给移动轴组件
+    if (this.transformControls && this.isSnapEnabled) {
       this.transformControls.setTranslationSnap(this.currentGridSize)
     }
     this._rebuildGrids()
@@ -103,6 +113,62 @@ export class SceneManager {
     this.transformControls.detach()
   }
 
+  // ==========================================================
+  // ★ 计算地图边界，并让所有摄像机自动聚焦过去
+  // ==========================================================
+  focusOnMap(blocks) {
+    if (!blocks || blocks.length === 0) return
+
+    let minX = Infinity, minY = Infinity, minZ = Infinity
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity
+
+    // 计算包含所有方块的超级包围盒
+    for (const b of blocks) {
+      const hx = (b.scale.x || 64) / 2
+      const hy = (b.scale.y || 64) / 2
+      const hz = (b.scale.z || 64) / 2
+
+      if (b.position.x - hx < minX) minX = b.position.x - hx
+      if (b.position.x + hx > maxX) maxX = b.position.x + hx
+      // 注意：Three.js 中 Z是深度，Y是高度
+      if (b.position.z - hz < minZ) minZ = b.position.z - hz
+      if (b.position.z + hz > maxZ) maxZ = b.position.z + hz
+      if (b.position.y - hy < minY) minY = b.position.y - hy
+      if (b.position.y + hy > maxY) maxY = b.position.y + hy
+    }
+
+    // 地图物理中心点
+    const centerX = (minX + maxX) / 2
+    const centerY = (minY + maxY) / 2
+    const centerZ = (minZ + maxZ) / 2
+
+    // 找出地图最大的跨度
+    const sizeX = maxX - minX
+    const sizeY = maxY - minY
+    const sizeZ = maxZ - minZ
+    const maxDim = Math.max(sizeX, sizeY, sizeZ, 1000) // 最小视野保证 1000
+
+    // 1. 瞬移透视相机 (放在斜上方 45 度角)
+    if (this.camera) {
+      this.camera.position.set(centerX + maxDim * 0.8, centerY + maxDim * 0.8, centerZ + maxDim * 0.8)
+      // 强制重置透视相机的角度，让它看向中心
+      this.camera.lookAt(centerX, centerY, centerZ)
+    }
+
+    // 2. 指挥三视图正交相机聚焦
+    if (this._viewportManager) {
+      this._viewportManager.focusOnMap(centerX, centerY, centerZ, maxDim)
+    }
+
+    // 3. 把移动控制器的中心也吸附过去，防止操作错乱
+    if (this.transformControls) {
+      // 这里的 detach 是为了重置内部状态
+      const attachedObj = this.transformControls.object
+      this.transformControls.detach()
+      if (attachedObj) this.transformControls.attach(attachedObj)
+    }
+  }
+
   init(canvas, viewportEl) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
     this.renderer.setPixelRatio(window.devicePixelRatio)
@@ -113,7 +179,7 @@ export class SceneManager {
     this.scene.background = new THREE.Color('#1a1a2e')
 
     this.camera = new THREE.PerspectiveCamera(
-      70, viewportEl.clientWidth / viewportEl.clientHeight, 1, 10000
+      70, viewportEl.clientWidth / viewportEl.clientHeight, 1, 60000 // ★ 增加视野范围
     )
     this.camera.position.set(256, 256, 256)
     this.camera.lookAt(0, 0, 0)
@@ -275,7 +341,20 @@ export class SceneManager {
 
   // ---- 事件绑定 ----
   _bindEvents(viewportEl) {
-    window.addEventListener('keydown', (e) => { this.keys[e.key.toLowerCase()] = true })
+    window.addEventListener('keydown', (e) => {
+      // 忽略输入框，防止打字时移动方块
+      if (['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return
+
+      this.keys[e.key.toLowerCase()] = true
+
+      // ★ 核心拦截：方向键用于精准微调已选中的方块
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+        if (this.transformControls && this.transformControls.object) {
+          e.preventDefault() // 防止页面自带的上下滚动
+          this._nudgeSelectedBlock(e.key)
+        }
+      }
+    })
     window.addEventListener('keyup', (e) => { this.keys[e.key.toLowerCase()] = false })
 
     viewportEl.addEventListener('pointerdown', (e) => {
@@ -418,75 +497,40 @@ export class SceneManager {
     }
   }
 
-// ---- 方块可视化 (支持多种几何体) ----
+// ---- 方块可视化 (防弹版) ----
   _createGeometry(block) {
-    // 👇 修复：在这里加上 vertices
     const { type, scale, vertices } = block
+    const width = scale.x; const depth = scale.y; const height = scale.z
+    const hx = width / 2; const hy = height / 2; const hz = depth / 2
 
-    // ★ 核心：如果是导入的任意切割图形，直接利用保存的顶点生成凸包
-    if (type === 'custom' && vertices && vertices.length > 0) {
-      // 将普通对象点转为 Three.js 的 Vector3 向量
-      const points = vertices.map(v => new THREE.Vector3(v.x, v.y, v.z))
-      // 生成凸包几何体
-      return new ConvexGeometry(points)
+    // ★ 核心修复：添加 try...catch 防崩溃保护
+    if (type === 'custom' && vertices && vertices.length >= 4) {
+      try {
+        const points = vertices.map(v => new THREE.Vector3(v.x, v.y, v.z))
+        return new ConvexGeometry(points)
+      } catch (err) {
+        console.warn(`[降级] 方块 ${block.id} 无法生成复杂凸包，已降级为标准长方体。原因:`, err.message)
+        // 发生错误时，不要崩溃，继续往下走，降级为长方体
+      }
     }
 
-    // 明确映射关系：X=宽, Y=深(长), Z=高
-    const width = scale.x
-    const depth = scale.y
-    const height = scale.z
-
-    const hx = width / 2
-    const hy = height / 2
-    const hz = depth / 2
-
     switch (type) {
-      case 'cube':
-        return new THREE.BoxGeometry(width, height, depth)
-
       case 'ramp': {
-        // 斜坡: 绘制在 XY 平面 (此时 Y 为高度), 向 Z轴 挤压 (深度)
         const shape = new THREE.Shape()
-        shape.moveTo(-hx, -hy) // 左下
-        shape.lineTo( hx, -hy) // 右下
-        shape.lineTo( hx,  hy) // 右上 (直角在这里)
-        shape.lineTo(-hx, -hy) // 闭合
-        const geo = new THREE.ExtrudeGeometry(shape, { depth: depth, bevelEnabled: false })
-        geo.translate(0, 0, -hz) // 将挤压后的几何体居中
-        return geo
-      }
-
-      case 'stairs': {
-        const group = []
-        const stepH = height / 4
-        const stepD = depth / 4
-        for (let i = 0; i < 4; i++) {
-          const stepGeo = new THREE.BoxGeometry(width, stepH, stepD)
-          stepGeo.translate(0, -height / 2 + stepH * i + stepH / 2, -depth / 2 + stepD * i + stepD / 2)
-          group.push(stepGeo)
-        }
-        return mergeGeometries(group)
-      }
-
-      case 'wedge': {
-        // 楔形: 尖端居中
-        const shape = new THREE.Shape()
-        shape.moveTo(-hx, -hy) // 左下
-        shape.lineTo( hx, -hy) // 右下
-        shape.lineTo( 0,   hy) // 顶部居中
-        shape.closePath()
+        shape.moveTo(-hx, -hy); shape.lineTo( hx, -hy); shape.lineTo( hx,  hy); shape.lineTo(-hx, -hy)
         const geo = new THREE.ExtrudeGeometry(shape, { depth: depth, bevelEnabled: false })
         geo.translate(0, 0, -hz)
         return geo
       }
-
-      case 'cylinder':
-        return new THREE.CylinderGeometry(Math.min(width, depth) / 2, Math.min(width, depth) / 2, height, 16)
-
-      case 'plane':
-        return new THREE.BoxGeometry(width, 2, depth)
-
+      case 'wedge': {
+        const shape = new THREE.Shape()
+        shape.moveTo(-hx, -hy); shape.lineTo( hx, -hy); shape.lineTo( 0,   hy); shape.closePath()
+        const geo = new THREE.ExtrudeGeometry(shape, { depth: depth, bevelEnabled: false })
+        geo.translate(0, 0, -hz)
+        return geo
+      }
       default:
+        // 包含 cube 以及所有 fallback 降级的情况
         return new THREE.BoxGeometry(width, height, depth)
     }
   }
@@ -645,12 +689,12 @@ syncBlockFromMesh(blockId) {
     const camera = this.camera
     if (!camera || !camera.isPerspectiveCamera) return
 
-    const sensitivity = 0.003
+    // ★ 使用可配置的灵敏度
     const euler = new THREE.Euler(0, 0, 0, 'YXZ')
     euler.setFromQuaternion(camera.quaternion)
 
-    euler.y -= dx * sensitivity
-    euler.x -= dy * sensitivity
+    euler.y -= dx * this.lookSensitivity
+    euler.x -= dy * this.lookSensitivity
 
     const PI_2 = Math.PI / 2 - 0.01
     euler.x = Math.max(-PI_2, Math.min(PI_2, euler.x))
@@ -664,7 +708,7 @@ _updateCamera() {
 
     const speed = this.moveSpeed * 0.016
 
-    // ★ 1. 第一人称飞行视角 (透视相机)
+    // 1. 第一人称飞行视角 (透视相机)
     if (camera.isPerspectiveCamera) {
       const dir = new THREE.Vector3()
       const forward = new THREE.Vector3()
@@ -673,11 +717,11 @@ _updateCamera() {
       forward.normalize()
       const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize()
 
-      // 兼容 WASD 和 方向键
-      if (this.keys['w'] || this.keys['arrowup']) dir.add(forward)
-      if (this.keys['s'] || this.keys['arrowdown']) dir.add(forward.clone().negate())
-      if (this.keys['a'] || this.keys['arrowleft']) dir.add(right.clone().negate())
-      if (this.keys['d'] || this.keys['arrowright']) dir.add(right)
+      // ★ 移除了所有的 arrowup/down 等，只保留 WASD + QE
+      if (this.keys['w']) dir.add(forward)
+      if (this.keys['s']) dir.add(forward.clone().negate())
+      if (this.keys['a']) dir.add(right.clone().negate())
+      if (this.keys['d']) dir.add(right)
       if (this.keys['q']) dir.y -= 1
       if (this.keys['e']) dir.y += 1
 
@@ -686,28 +730,78 @@ _updateCamera() {
         camera.position.add(dir)
       }
     }
-    // ★ 2. 正交视图平面平移 (三视图专属)
+    // 2. 正交视图平面平移 (三视图专属)
     else if (camera.isOrthographicCamera) {
       let dx = 0
       let dy = 0
 
-      // W/S 和 上下方向键：在垂直方向平移
-      if (this.keys['w'] || this.keys['arrowup']) dy += 1
-      if (this.keys['s'] || this.keys['arrowdown']) dy -= 1
-
-      // A/D 和 左右方向键：在水平方向平移
-      if (this.keys['a'] || this.keys['arrowleft']) dx -= 1
-      if (this.keys['d'] || this.keys['arrowright']) dx += 1
+      // ★ 移除了所有的 arrowup/down 等
+      if (this.keys['w']) dy += 1
+      if (this.keys['s']) dy -= 1
+      if (this.keys['a']) dx -= 1
+      if (this.keys['d']) dx += 1
 
       if (dx !== 0 || dy !== 0) {
-        // 根据当前的缩放层级调整平移速度，保证不管放多大移动手感都一致
         const orthoWidth = camera.right - camera.left
         const panSpeed = (orthoWidth / 1000) * (speed * 1.5)
-
-        // 使用局部坐标空间平移（translateX/Y），这会自动适配 顶/前/侧 三个不同朝向的摄像机！
         camera.translateX(dx * panSpeed)
         camera.translateY(dy * panSpeed)
       }
+    }
+  }
+
+  // ==========================================================
+  // ★ 视口感知的方块微调算法 (Nudging)
+  // ==========================================================
+  _nudgeSelectedBlock(key) {
+    const obj = this.transformControls.object
+    if (!obj || !obj.userData.blockId) return
+
+    // 计算单次移动步长
+    const step = this.isSnapEnabled ? this.currentGridSize : 1
+    let dx = 0, dy = 0, dz = 0
+
+    // 判断用户当前目光落在哪一个视图里
+    let view = 'top'
+    if (this._viewportManager) {
+      view = this._viewportManager.viewMode === 'quad'
+        ? this._viewportManager.activeQuadView
+        : this._viewportManager.viewMode
+    }
+
+    // 根据视口朝向，完美映射方向键的空间物理意义
+    // 提示: Three.js 中 X=左右, Y=上下(高度), Z=前后(深度)
+    if (view === 'top' || view === 'perspective') {
+      // 顶视图向下看，映射到 XZ 平面
+      if (key === 'ArrowUp') dz = -step
+      if (key === 'ArrowDown') dz = step
+      if (key === 'ArrowLeft') dx = -step
+      if (key === 'ArrowRight') dx = step
+    }
+    else if (view === 'front') {
+      // 前视图向前看，映射到 XY 平面
+      if (key === 'ArrowUp') dy = step
+      if (key === 'ArrowDown') dy = -step
+      if (key === 'ArrowLeft') dx = -step
+      if (key === 'ArrowRight') dx = step
+    }
+    else if (view === 'side') {
+      // 侧视图向左看 (沿着X轴负方向)，映射到 ZY 平面
+      if (key === 'ArrowUp') dy = step
+      if (key === 'ArrowDown') dy = -step
+      if (key === 'ArrowLeft') dz = step
+      if (key === 'ArrowRight') dz = -step
+    }
+
+    // 实施移动
+    obj.position.x += dx
+    obj.position.y += dy
+    obj.position.z += dz
+
+    // 触发全局同步事件
+    if (this.onBlockMoved) {
+      const data = this.syncBlockFromMesh(obj.userData.blockId)
+      if (data) this.onBlockMoved(obj.userData.blockId, data)
     }
   }
 }
