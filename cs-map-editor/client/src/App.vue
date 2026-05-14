@@ -573,7 +573,7 @@ function onMirrorBlock(axis) {
 
 <style scoped>
 /* 保持你的原有样式完全不变 */
-.app-layout { display: flex; flex-direction: column; height: 100vh; background: #1a1a2e; min-width: 720px; }
+.app-layout { display: flex; flex-direction: column; height: 100vh; background: #1a1a2e; min-width: 900px; }
 .main-area { display: flex; flex: 1; overflow: hidden; }
 .viewport { flex: 1 1 400px; position: relative; background: #0f0f23; min-width: 400px; }
 #three-canvas { display: block; width: 100%; height: 100%; }

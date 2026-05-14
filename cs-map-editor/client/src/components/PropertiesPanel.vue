@@ -153,9 +153,9 @@ function mirrorBlock(axis) {
   background: #16213e; border-left: 1px solid #0f3460;
   padding: 12px; overflow-y: auto;
 }
-@media (max-width: 1100px) {
+/* @media (max-width: 1100px) {
   .props-panel { display: none; }
-}
+} */
 @media (max-width: 900px) {
   .room-panel { width: 40px; min-width: 40px; max-width: 40px; padding: 8px; }
   .viewport-hint { font-size: 9px; padding: 4px 8px; gap: 4px; }
