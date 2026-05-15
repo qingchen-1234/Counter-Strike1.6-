@@ -1,19 +1,12 @@
 // ============================================================
-// SceneManager — Three.js 场景管理器
-// 职责: 初始化3D场景、摄像机、光照、网格吸附、鼠标交互
+// SceneManager — Three.js 场景管理器 (专业级渲染 & 拖拽缩放)
 // ============================================================
 
 import * as THREE from 'three'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
-// ★ 新增：引入凸包几何体生成器
 import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js'
 
 const GRID_SIZE = 16
-
-function mergeGeometries(geometries) {
-  const merged = new THREE.BufferGeometry()
-  return geometries[0] || new THREE.BoxGeometry(64, 64, 64)
-}
 
 export class SceneManager {
   constructor() {
@@ -30,20 +23,31 @@ export class SceneManager {
     this.raycaster = new THREE.Raycaster()
     this.mouse = new THREE.Vector2()
     this.keys = {}
-    this.moveSpeed = 1500 // ★ 默认速度从 300 提升到 1500，走得更快
-    this.lookSpeed = 0.002
-    this.lookSensitivity = 0.003 // 鼠标灵敏度
+
+    this.moveSpeed = 1500
+    this.lookSensitivity = 0.003
+
     this.isRightDragging = false
     this.isLeftDragging = false
     this.isMiddleDragging = false
     this.prevMouse = { x: 0, y: 0 }
+
     this.currentGridSize = GRID_SIZE
     this.isSnapEnabled = true
     this._getActiveCamera = null
     this._viewportManager = null
-
-    // ★ 新增：用于记录拖拽起始所在的视口，防止跨视图拖拽断裂
     this._activeDragView = null
+
+    // ★ 新增：选中状态与缩放拖拽系统
+    this.selectedBlockId = null
+    this.resizeGizmo = null
+    this.resizeHandles = null
+    this.isResizing = false
+    this.activeResizeHandle = null
+    this.dragPlane = new THREE.Plane()
+    this.dragStartLocal = new THREE.Vector3()
+    this.resizeStartScale = new THREE.Vector3()
+    this.resizeStartPos = new THREE.Vector3()
   }
 
   setActiveCameraFn(fn) { this._getActiveCamera = fn }
@@ -58,49 +62,43 @@ export class SceneManager {
 
   updateGridSize(newSize) {
     this.currentGridSize = Math.max(1, Math.min(256, newSize))
-    // ★ 只有在吸附开启时，才把网格大小喂给移动轴组件
     if (this.transformControls && this.isSnapEnabled) {
       this.transformControls.setTranslationSnap(this.currentGridSize)
     }
     this._rebuildGrids()
   }
 
-// ---- 优化：创建不遮挡模型、覆盖全图的网格 ----
-  _createGridHelper(color1 = '#333355', color2 = '#222244') {
-    // 1. 设置巨大的固定范围。CS 1.6 的最大地图边界为 8192，所以 16384 可以完美覆盖整个世界
-    const range = 16384
-    const divisions = Math.floor(range / this.currentGridSize)
-    const grid = new THREE.GridHelper(range, divisions, color1, color2)
-
-    // 2. 材质优化：解决网格遮挡方块的问题
-    grid.material.transparent = true
-    grid.material.opacity = 0.35     // 调低透明度，让它变成较暗的辅助线
-    grid.material.depthWrite = false // ★ 核心：关闭深度写入，这意味着网格永远不会在物理上“挡住”后面的方块
-
-    return grid
-  }
-
   _rebuildGrids() {
     for (const g of this.gridHelpers) {
-      this.scene.remove(g)
-      g.geometry.dispose()
-      g.material.dispose()
+      this.scene.remove(g); g.geometry.dispose(); g.material.dispose()
     }
     this.gridHelpers = []
 
-    const gXZ = this._createGridHelper('#553333', '#442222')
-    this.scene.add(gXZ)
-    this.gridHelpers.push(gXZ)
+    const range = 16384
+    const buildGridLayer = (size, color, isMajor) => {
+      const divisions = Math.floor(range / size)
+      const grid = new THREE.GridHelper(range, divisions, color, color)
+      grid.material.transparent = true
+      grid.material.opacity = isMajor ? 0.5 : 0.2
+      grid.material.depthWrite = false
+      grid.renderOrder = -1
+      return grid
+    }
 
-    const gXY = this._createGridHelper('#333366', '#222244')
-    gXY.rotation.x = -Math.PI / 2
-    this.scene.add(gXY)
-    this.gridHelpers.push(gXY)
+    this.gridXZ_minor = buildGridLayer(this.currentGridSize, '#333344', false)
+    this.gridXZ_major = buildGridLayer(Math.max(256, this.currentGridSize * 4), '#555566', true)
+    this.scene.add(this.gridXZ_minor, this.gridXZ_major)
+    this.gridHelpers.push(this.gridXZ_minor, this.gridXZ_major)
 
-    const gYZ = this._createGridHelper('#336633', '#224422')
-    gYZ.rotation.z = Math.PI / 2
-    this.scene.add(gYZ)
-    this.gridHelpers.push(gYZ)
+    this.gridXY_minor = buildGridLayer(this.currentGridSize, '#333344', false); this.gridXY_minor.rotation.x = -Math.PI / 2
+    this.gridXY_major = buildGridLayer(Math.max(256, this.currentGridSize * 4), '#555566', true); this.gridXY_major.rotation.x = -Math.PI / 2
+    this.scene.add(this.gridXY_minor, this.gridXY_major)
+    this.gridHelpers.push(this.gridXY_minor, this.gridXY_major)
+
+    this.gridYZ_minor = buildGridLayer(this.currentGridSize, '#333344', false); this.gridYZ_minor.rotation.z = Math.PI / 2
+    this.gridYZ_major = buildGridLayer(Math.max(256, this.currentGridSize * 4), '#555566', true); this.gridYZ_major.rotation.z = Math.PI / 2
+    this.scene.add(this.gridYZ_minor, this.gridYZ_major)
+    this.gridHelpers.push(this.gridYZ_minor, this.gridYZ_major)
   }
 
   clearAllBlocks() {
@@ -111,58 +109,42 @@ export class SceneManager {
     }
     this.blockMeshes.clear()
     this.transformControls.detach()
+    this.selectedBlockId = null
+    this._updateResizeGizmo(null)
   }
 
-  // ==========================================================
-  // ★ 计算地图边界，并让所有摄像机自动聚焦过去
-  // ==========================================================
   focusOnMap(blocks) {
     if (!blocks || blocks.length === 0) return
-
     let minX = Infinity, minY = Infinity, minZ = Infinity
     let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity
 
-    // 计算包含所有方块的超级包围盒
     for (const b of blocks) {
       const hx = (b.scale.x || 64) / 2
       const hy = (b.scale.y || 64) / 2
       const hz = (b.scale.z || 64) / 2
-
       if (b.position.x - hx < minX) minX = b.position.x - hx
       if (b.position.x + hx > maxX) maxX = b.position.x + hx
-      // 注意：Three.js 中 Z是深度，Y是高度
       if (b.position.z - hz < minZ) minZ = b.position.z - hz
       if (b.position.z + hz > maxZ) maxZ = b.position.z + hz
       if (b.position.y - hy < minY) minY = b.position.y - hy
       if (b.position.y + hy > maxY) maxY = b.position.y + hy
     }
 
-    // 地图物理中心点
     const centerX = (minX + maxX) / 2
     const centerY = (minY + maxY) / 2
     const centerZ = (minZ + maxZ) / 2
+    const maxDim = Math.max(maxX - minX, maxY - minY, maxZ - minZ, 1000)
 
-    // 找出地图最大的跨度
-    const sizeX = maxX - minX
-    const sizeY = maxY - minY
-    const sizeZ = maxZ - minZ
-    const maxDim = Math.max(sizeX, sizeY, sizeZ, 1000) // 最小视野保证 1000
-
-    // 1. 瞬移透视相机 (放在斜上方 45 度角)
     if (this.camera) {
       this.camera.position.set(centerX + maxDim * 0.8, centerY + maxDim * 0.8, centerZ + maxDim * 0.8)
-      // 强制重置透视相机的角度，让它看向中心
       this.camera.lookAt(centerX, centerY, centerZ)
     }
 
-    // 2. 指挥三视图正交相机聚焦
     if (this._viewportManager) {
       this._viewportManager.focusOnMap(centerX, centerY, centerZ, maxDim)
     }
 
-    // 3. 把移动控制器的中心也吸附过去，防止操作错乱
     if (this.transformControls) {
-      // 这里的 detach 是为了重置内部状态
       const attachedObj = this.transformControls.object
       this.transformControls.detach()
       if (attachedObj) this.transformControls.attach(attachedObj)
@@ -176,20 +158,12 @@ export class SceneManager {
     this.renderer.shadowMap.enabled = true
 
     this.scene = new THREE.Scene()
-    this.scene.background = new THREE.Color('#1a1a2e')
-
-    this.camera = new THREE.PerspectiveCamera(
-      70, viewportEl.clientWidth / viewportEl.clientHeight, 1, 60000 // ★ 增加视野范围
-    )
-    this.camera.position.set(256, 256, 256)
-    this.camera.lookAt(0, 0, 0)
+    this.camera = new THREE.PerspectiveCamera(70, viewportEl.clientWidth / viewportEl.clientHeight, 1, 60000)
 
     this._setupLights()
     this._setupGrid()
+    this._createResizeGizmo() // ★ 初始化缩放控制器
 
-    // ==========================================================
-    // ★ 核心改进：极其健壮的虚拟 DOM 事件代理
-    // ==========================================================
     this.transformControlsDummy = {
       addEventListener: function(type, listener) {
         if (!this.listeners[type]) this.listeners[type] = []
@@ -201,29 +175,27 @@ export class SceneManager {
       },
       getBoundingClientRect: () => viewportEl.getBoundingClientRect(),
       style: viewportEl.style,
-      listeners: {}
+      listeners: {},
+      ownerDocument: this,
+      setPointerCapture: () => {},
+      releasePointerCapture: () => {}
     }
-
-    // 【魔法代码】将自身伪装成 ownerDocument，这样就能截获 TransformControls 绑定的全局拖拽事件
     this.transformControlsDummy.ownerDocument = this.transformControlsDummy
-    // 兼容高版本 Three.js 的指针捕获 API
-    this.transformControlsDummy.setPointerCapture = () => {}
-    this.transformControlsDummy.releasePointerCapture = () => {}
 
     this.transformControls = new TransformControls(this.camera, this.transformControlsDummy)
     this.transformControls.setSize(0.8)
     this.transformControls.setTranslationSnap(GRID_SIZE)
 
-// 在 init() 中找到这里，替换掉原有的 dragging-changed 和 objectChange
     this.transformControls.addEventListener('dragging-changed', (e) => {
-      // 当 e.value 为 false 时，代表鼠标松开，拖拽完成
       if (!e.value) {
         const obj = this.transformControls.object
         if (obj && obj.userData.blockId && this.onBlockMoved) {
-          // 此时同步，不仅同步位移，还会把你拉伸后的绝对尺寸同步给核心数据
           const data = this.syncBlockFromMesh(obj.userData.blockId)
           if (data) this.onBlockMoved(obj.userData.blockId, data)
         }
+        this._updateResizeGizmo(this.selectedBlockId) // 更新包围盒
+      } else {
+        this._updateResizeGizmo(null) // 拖拽时隐藏包围盒
       }
     })
     this.scene.add(this.transformControls)
@@ -232,51 +204,85 @@ export class SceneManager {
     this._animate()
   }
 
+  // ==========================================================
+  // ★ 1D 单向自由缩放拖拽柄 (J.A.C.K 样式)
+  // ==========================================================
+  _createResizeGizmo() {
+    this.resizeGizmo = new THREE.Group()
+    this.resizeGizmo.visible = false
+    this.scene.add(this.resizeGizmo)
+
+    // 创建 6 个面的黄色拖拽方块
+    this.resizeHandles = new THREE.Group()
+    this.resizeGizmo.add(this.resizeHandles)
+
+    const handleMat = new THREE.MeshBasicMaterial({ color: '#ffcc00', depthTest: false })
+    const createHandle = (name) => {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(8, 8, 8), handleMat)
+      mesh.name = name
+      mesh.renderOrder = 1002 // 永远在最上层
+      this.resizeHandles.add(mesh)
+      return mesh
+    }
+
+    this.handlePX = createHandle('px')
+    this.handleNX = createHandle('nx')
+    this.handlePY = createHandle('py')
+    this.handleNY = createHandle('ny')
+    this.handlePZ = createHandle('pz')
+    this.handleNZ = createHandle('nz')
+  }
+
+  _updateResizeGizmo(blockId) {
+    if (!blockId || !this.blockMeshes.has(blockId)) {
+      this.resizeGizmo.visible = false
+      return
+    }
+    const mesh = this.blockMeshes.get(blockId)
+    this.resizeGizmo.visible = true
+    this.resizeGizmo.position.copy(mesh.position)
+    this.resizeGizmo.quaternion.copy(mesh.quaternion)
+
+    const w = mesh.userData.baseScale.x * mesh.scale.x
+    const d = mesh.userData.baseScale.y * mesh.scale.y
+    const h = mesh.userData.baseScale.z * mesh.scale.z
+
+    // 把柄放到 6 个面的正中心
+    this.handlePX.position.set(w/2, 0, 0)
+    this.handleNX.position.set(-w/2, 0, 0)
+    this.handlePY.position.set(0, h/2, 0)
+    this.handleNY.position.set(0, -h/2, 0)
+    this.handlePZ.position.set(0, 0, d/2)
+    this.handleNZ.position.set(0, 0, -d/2)
+  }
+
   _setupLights() {
     const ambient = new THREE.AmbientLight('#ffffff', 0.6)
     this.scene.add(ambient)
-
     const dirLight = new THREE.DirectionalLight('#ffffff', 0.8)
     dirLight.position.set(200, 400, 300)
     dirLight.castShadow = true
     this.scene.add(dirLight)
   }
 
-  // ---- 参考网格与坐标轴 ----
   _setupGrid() {
     this._rebuildGrids()
-
-    // 让红绿蓝三根中心坐标轴也贯穿整个世界
     const axisLen = 8192
-
-    // 给坐标轴也加上 depthWrite: false，防止遮挡中心点的细小方块
     const xAxis = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(-axisLen, 0, 0), new THREE.Vector3(axisLen, 0, 0)
-      ]),
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-axisLen, 0, 0), new THREE.Vector3(axisLen, 0, 0)]),
       new THREE.LineBasicMaterial({ color: '#ff4444', opacity: 0.4, transparent: true, depthWrite: false })
     )
     const yAxis = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0, -axisLen, 0), new THREE.Vector3(0, axisLen, 0)
-      ]),
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, -axisLen, 0), new THREE.Vector3(0, axisLen, 0)]),
       new THREE.LineBasicMaterial({ color: '#44ff44', opacity: 0.4, transparent: true, depthWrite: false })
     )
     const zAxis = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0, 0, -axisLen), new THREE.Vector3(0, 0, axisLen)
-      ]),
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, -axisLen), new THREE.Vector3(0, 0, axisLen)]),
       new THREE.LineBasicMaterial({ color: '#4444ff', opacity: 0.4, transparent: true, depthWrite: false })
     )
     this.scene.add(xAxis, yAxis, zAxis)
-
-    // 注意：xAxis, yAxis, zAxis 没有被加入 this.gridHelpers 数组
-    // 这恰好帮助我们实现了“自由视角隐藏网格，但保留坐标轴”的需求！
   }
 
-  // ==========================================================
-  // ★ 终极分发机制：带“视口锁定”的精确坐标推算
-  // ==========================================================
   _dispatchToTransformControls(type, event, viewportEl) {
     if (!this.transformControls || !this._viewportManager) return
 
@@ -285,41 +291,34 @@ export class SceneManager {
     const canvasY = event.clientY - rect.top
 
     let viewName = null
-
-    // 1. 【视口锁定】如果正在拖拽，强制使用开始拖拽时的视口，无视鼠标当前滑动到了哪里
     if (this.transformControls.dragging && this._activeDragView) {
       viewName = this._activeDragView
     } else {
       viewName = this._viewportManager.hitTest(canvasX, canvasY)
     }
-
     if (!viewName) return
 
-    // 2. 维护拖拽状态标志
     if (type === 'pointerdown') this._activeDragView = viewName
     if (type === 'pointerup') this._activeDragView = null
 
     const vp = this._viewportManager.viewports[viewName]
     const camera = this._viewportManager.getCameraForView(viewName)
 
-    // 3. 非拖拽时实时更新内部相机
     if (!this.transformControls.dragging) {
       this.transformControls.camera = camera
       this._viewportManager.activateView(viewName)
     }
 
-    // 4. 根据当前锁定的视口，计算完美的局部 NDC 坐标
     const localX = canvasX - vp.x
     const localY = canvasY - vp.y
     const ndcX = (localX / vp.w) * 2 - 1
     const ndcY = -(localY / vp.h) * 2 + 1
 
-    // 5. 逆向推算：欺骗 TransformControls 的全局长宽比计算
     const fakeClientX = ((ndcX + 1) / 2) * rect.width + rect.left
     const fakeClientY = ((-ndcY + 1) / 2) * rect.height + rect.top
 
     const fakeEvent = {
-      type: type, // 将真实类型传递过去
+      type: type,
       clientX: fakeClientX,
       clientY: fakeClientY,
       button: event.button !== undefined ? event.button : 0,
@@ -331,26 +330,21 @@ export class SceneManager {
 
     const listeners = this.transformControlsDummy.listeners[type]
     if (listeners) {
-      // 使用副本遍历，防止拖拽结束时自身解绑引发的数组越界
       const listenersCopy = [...listeners]
-      for (const listener of listenersCopy) {
-        listener(fakeEvent)
-      }
+      for (const listener of listenersCopy) listener(fakeEvent)
     }
   }
 
-  // ---- 事件绑定 ----
+  // ==========================================================
+  // ★ 事件绑定 (包含拖拽柄的拦截逻辑)
+  // ==========================================================
   _bindEvents(viewportEl) {
     window.addEventListener('keydown', (e) => {
-      // 忽略输入框，防止打字时移动方块
       if (['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return
-
       this.keys[e.key.toLowerCase()] = true
-
-      // ★ 核心拦截：方向键用于精准微调已选中的方块
       if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
         if (this.transformControls && this.transformControls.object) {
-          e.preventDefault() // 防止页面自带的上下滚动
+          e.preventDefault()
           this._nudgeSelectedBlock(e.key)
         }
       }
@@ -358,70 +352,146 @@ export class SceneManager {
     window.addEventListener('keyup', (e) => { this.keys[e.key.toLowerCase()] = false })
 
     viewportEl.addEventListener('pointerdown', (e) => {
-      this._dispatchToTransformControls('pointerdown', e, viewportEl)
-
       if (e.button === 0) this.isLeftDragging = true
       if (e.button === 1) this.isMiddleDragging = true
       if (e.button === 2) this.isRightDragging = true
-      this.prevMouse.x = e.clientX
-      this.prevMouse.y = e.clientY
+      this.prevMouse.x = e.clientX; this.prevMouse.y = e.clientY
+
+      // ★ 拦截缩放柄拖拽
+      if (e.button === 0 && this.resizeGizmo.visible) {
+        const rect = viewportEl.getBoundingClientRect()
+        const rayData = this._viewportManager.getRaycasterData(e.clientX - rect.left, e.clientY - rect.top)
+
+        if (rayData) {
+          // 放宽射线的检测范围，让细小的柄更容易被点中
+          this.raycaster.params.Line.threshold = 10
+          this.raycaster.setFromCamera(rayData.mouseCoords, rayData.camera)
+
+          const hits = this.raycaster.intersectObjects(this.resizeHandles.children, false)
+          if (hits.length > 0) {
+            this.isResizing = true
+            this.activeResizeHandle = hits[0].object.name
+            const targetMesh = this.blockMeshes.get(this.selectedBlockId)
+
+            this.resizeStartScale.copy(targetMesh.scale)
+            this.resizeStartPos.copy(targetMesh.position)
+
+            // 创建一个面向相机的虚拟平面，用于映射鼠标拖拽距离
+            const planeNormal = new THREE.Vector3().copy(rayData.camera.position).sub(targetMesh.position).normalize()
+            this.dragPlane.setFromNormalAndCoplanarPoint(planeNormal, targetMesh.position)
+
+            const intersect = new THREE.Vector3()
+            this.raycaster.ray.intersectPlane(this.dragPlane, intersect)
+            // 记录本地坐标系下的起始拖拽点
+            this.dragStartLocal.copy(targetMesh.worldToLocal(intersect))
+
+            this.transformControls.detach() // 隐藏移动轴
+            return // 拦截，不传递给 TransformControls
+          }
+        }
+      }
+
+      this._dispatchToTransformControls('pointerdown', e, viewportEl)
     })
 
     window.addEventListener('pointerup', (e) => {
-      this._dispatchToTransformControls('pointerup', e, viewportEl)
-
       if (e.button === 0) this.isLeftDragging = false
       if (e.button === 1) this.isMiddleDragging = false
       if (e.button === 2) this.isRightDragging = false
+
+      // ★ 结束拖拽
+      if (this.isResizing) {
+        this.isResizing = false
+        const targetMesh = this.blockMeshes.get(this.selectedBlockId)
+        if (targetMesh) {
+          this.transformControls.attach(targetMesh)
+          if (this.onBlockMoved) {
+            const data = this.syncBlockFromMesh(this.selectedBlockId)
+            if (data) this.onBlockMoved(this.selectedBlockId, data)
+          }
+        }
+        return
+      }
+
+      this._dispatchToTransformControls('pointerup', e, viewportEl)
     })
 
     window.addEventListener('pointermove', (e) => {
+      // ★ 处理 1D 面拖拽逻辑
+      if (this.isResizing && this.selectedBlockId) {
+        const rect = viewportEl.getBoundingClientRect()
+        const rayData = this._viewportManager.getRaycasterData(e.clientX - rect.left, e.clientY - rect.top)
+
+        if (rayData) {
+          this.raycaster.setFromCamera(rayData.mouseCoords, rayData.camera)
+          const intersect = new THREE.Vector3()
+          if (this.raycaster.ray.intersectPlane(this.dragPlane, intersect)) {
+            const targetMesh = this.blockMeshes.get(this.selectedBlockId)
+            const localMouse = targetMesh.worldToLocal(intersect)
+
+            let axis = 'x', dir = 1
+            if (this.activeResizeHandle.includes('x')) { axis = 'x'; dir = this.activeResizeHandle.includes('p') ? 1 : -1 }
+            else if (this.activeResizeHandle.includes('y')) { axis = 'y'; dir = this.activeResizeHandle.includes('p') ? 1 : -1 }
+            else if (this.activeResizeHandle.includes('z')) { axis = 'z'; dir = this.activeResizeHandle.includes('p') ? 1 : -1 }
+
+            let localDelta = (localMouse[axis] - this.dragStartLocal[axis]) * dir
+
+            // ★ 应用网格吸附
+            if (this.isSnapEnabled) {
+              localDelta = Math.round(localDelta / this.currentGridSize) * this.currentGridSize
+            }
+
+            const baseLength = targetMesh.userData.baseScale[axis] * this.resizeStartScale[axis]
+            const newLength = baseLength + localDelta
+
+            // 防止缩成负数或太小
+            if (newLength >= Math.max(1, this.currentGridSize)) {
+              // 1. 改变该轴的缩放比例
+              targetMesh.scale[axis] = newLength / targetMesh.userData.baseScale[axis]
+
+              // 2. 将方块的中心点向拉伸的方向移动一半，实现“固定对侧”的效果
+              const localShift = new THREE.Vector3()
+              localShift[axis] = (localDelta / 2) * dir
+              const worldShift = localShift.applyQuaternion(targetMesh.quaternion)
+
+              targetMesh.position.copy(this.resizeStartPos).add(worldShift)
+
+              // 3. 实时更新拖拽柄的位置
+              this._updateResizeGizmo(this.selectedBlockId)
+            }
+          }
+        }
+        return // 拦截
+      }
+
       this._dispatchToTransformControls('pointermove', e, viewportEl)
 
       const isDraggingTransform = this.transformControls && this.transformControls.dragging
       const shouldOrbit = this.isRightDragging || (this.isLeftDragging && this.isMiddleDragging) || this.isMiddleDragging
 
       if (shouldOrbit && !isDraggingTransform) {
-        const dx = e.clientX - this.prevMouse.x
-        const dy = e.clientY - this.prevMouse.y
-        this._orbitCamera(dx, dy)
-        this.prevMouse.x = e.clientX
-        this.prevMouse.y = e.clientY
+        this._orbitCamera(e.clientX - this.prevMouse.x, e.clientY - this.prevMouse.y)
+        this.prevMouse.x = e.clientX; this.prevMouse.y = e.clientY
       }
     })
 
-// 滚轮缩放 (支持向鼠标中心精准缩放)
     viewportEl.addEventListener('wheel', (e) => {
       e.preventDefault()
-
       const rect = viewportEl.getBoundingClientRect()
-      const canvasX = e.clientX - rect.left
-      const canvasY = e.clientY - rect.top
+      const rayData = this._viewportManager.getRaycasterData(e.clientX - rect.left, e.clientY - rect.top)
 
       let targetCamera = this.camera
       let ndcX = 0, ndcY = 0
 
-      if (this._viewportManager) {
-        const rayData = this._viewportManager.getRaycasterData(canvasX, canvasY)
-        if (rayData) {
-          // ★ 核心修复：永远缩放鼠标【当前悬停】的那个视图！
-          targetCamera = rayData.camera
-          ndcX = rayData.mouseCoords.x
-          ndcY = rayData.mouseCoords.y
-
-          // 顺手将其设为激活视图，这样滚轮缩放后直接按 WASD 就能无缝平移了
-          this._viewportManager.activateView(rayData.viewName)
-        } else if (this._getActiveCamera) {
-          targetCamera = this._getActiveCamera()
-        }
+      if (rayData) {
+        targetCamera = rayData.camera
+        ndcX = rayData.mouseCoords.x; ndcY = rayData.mouseCoords.y
+        this._viewportManager.activateView(rayData.viewName)
       }
 
-      // 如果目标是三视图的正交相机
-      if (targetCamera && targetCamera.isOrthographicCamera && this._viewportManager) {
+      if (targetCamera && targetCamera.isOrthographicCamera) {
         this._viewportManager.zoomOrthoCamera(targetCamera, e.deltaY, ndcX, ndcY)
-      }
-      // 如果目标是自由视角的透视相机
-      else if (targetCamera) {
+      } else if (targetCamera) {
         const forward = new THREE.Vector3()
         targetCamera.getWorldDirection(forward)
         targetCamera.position.addScaledVector(forward, -e.deltaY * 50 * 0.01)
@@ -434,9 +504,7 @@ export class SceneManager {
     })
     viewportEl.addEventListener('click', (e) => {
       if (e.button !== 0) return
-      const dx = e.clientX - clickStart.x
-      const dy = e.clientY - clickStart.y
-      if (Math.abs(dx) > 5 || Math.abs(dy) > 5) return
+      if (Math.abs(e.clientX - clickStart.x) > 5 || Math.abs(e.clientY - clickStart.y) > 5) return
       this._pickBlock(e, viewportEl)
     })
 
@@ -446,11 +514,12 @@ export class SceneManager {
       this.camera.updateProjectionMatrix()
       this.renderer.setSize(viewportEl.clientWidth, viewportEl.clientHeight)
     })
-
     viewportEl.addEventListener('contextmenu', (e) => e.preventDefault())
   }
 
-  // ---- 下面都是原有逻辑保持不变 ----
+  // ==========================================================
+  // ★ 双轨射线拾取 (解决遮挡，精准点选线条与X)
+  // ==========================================================
   _pickBlock(event, viewportEl) {
     const rect = viewportEl.getBoundingClientRect()
     const canvasX = event.clientX - rect.left
@@ -469,48 +538,101 @@ export class SceneManager {
     }
 
     this.raycaster.setFromCamera(this.mouse, camera)
-    const meshes = Array.from(this.blockMeshes.values())
-    const intersects = this.raycaster.intersectObjects(meshes)
+    let intersects = []
+
+    if (camera.isOrthographicCamera) {
+      // 2D 视图下：放大线条点击宽容度，且只检测线条和十字星，完全无视面墙！
+      this.raycaster.params.Line.threshold = (camera.right - camera.left) / 100
+
+      const pickables = []
+      for (const mesh of this.blockMeshes.values()) {
+        if (mesh.userData.edges) pickables.push(mesh.userData.edges)
+        if (mesh.userData.centerMarker) pickables.push(mesh.userData.centerMarker)
+      }
+      intersects = this.raycaster.intersectObjects(pickables, false)
+    } else {
+      // 3D 视图下：正常检测实体方块
+      const meshes = Array.from(this.blockMeshes.values())
+      intersects = this.raycaster.intersectObjects(meshes, false)
+    }
 
     if (intersects.length > 0) {
-      const obj = intersects[0].object
-      const blockId = obj.userData.blockId
-      this._highlightBlock(blockId)
+      let obj = intersects[0].object
+      if (obj.parent && obj.parent.userData && obj.parent.userData.blockId) {
+        obj = obj.parent // 如果点中的是线条/X，向上找实体
+      }
+
+      this.selectedBlockId = obj.userData.blockId
+      this._highlightBlock(this.selectedBlockId)
 
       this.transformControls.camera = camera
       this.transformControls.attach(obj)
-      if (this.onSelectBlock) this.onSelectBlock(blockId)
+      if (this.onSelectBlock) this.onSelectBlock(this.selectedBlockId)
     } else {
+      // 点击空白处，取消选中
+      this.selectedBlockId = null
       this._highlightBlock(null)
       this.transformControls.detach()
       if (this.onSelectBlock) this.onSelectBlock(null)
     }
   }
 
+  // ==========================================================
+  // ★ 渲染模式切换 (解决外框线问题)
+  // ==========================================================
+  setRenderMode(mode) {
+    const isWireframe = (mode === 'wireframe')
+
+    for (const [id, mesh] of this.blockMeshes) {
+      // 2D 模式下，直接隐藏实体墙面，绝不遮挡！
+      mesh.material.visible = !isWireframe
+
+      if (mesh.userData.edges) mesh.userData.edges.visible = isWireframe
+      if (mesh.userData.centerMarker) mesh.userData.centerMarker.visible = isWireframe
+    }
+  }
+
+  // ==========================================================
+  // ★ 高亮与图层覆盖 (选中的方块浮于最顶层)
+  // ==========================================================
   _highlightBlock(blockId) {
     for (const [id, mesh] of this.blockMeshes) {
       if (id === blockId) {
         mesh.material.emissive?.set('#333333')
+        if (mesh.userData.edges) {
+          mesh.userData.edges.material.color.set('#ffffff')
+          mesh.userData.edges.renderOrder = 1000 // ★ 选中浮顶
+        }
+        if (mesh.userData.centerMarker) {
+          mesh.userData.centerMarker.material.color.set('#ffffff')
+          mesh.userData.centerMarker.renderOrder = 1000 // ★ 选中浮顶
+        }
       } else {
         mesh.material.emissive?.set('#000000')
+        if (mesh.userData.edges) {
+          mesh.userData.edges.material.color.set('#4a9eff')
+          mesh.userData.edges.renderOrder = 998 // ★ 未选中沉底
+        }
+        if (mesh.userData.centerMarker) {
+          mesh.userData.centerMarker.material.color.set('#00ffff')
+          mesh.userData.centerMarker.renderOrder = 998
+        }
       }
     }
+    this._updateResizeGizmo(blockId) // 刷新拖拽柄
   }
 
-// ---- 方块可视化 (防弹版) ----
   _createGeometry(block) {
     const { type, scale, vertices } = block
     const width = scale.x; const depth = scale.y; const height = scale.z
     const hx = width / 2; const hy = height / 2; const hz = depth / 2
 
-    // ★ 核心修复：添加 try...catch 防崩溃保护
     if (type === 'custom' && vertices && vertices.length >= 4) {
       try {
         const points = vertices.map(v => new THREE.Vector3(v.x, v.y, v.z))
         return new ConvexGeometry(points)
       } catch (err) {
-        console.warn(`[降级] 方块 ${block.id} 无法生成复杂凸包，已降级为标准长方体。原因:`, err.message)
-        // 发生错误时，不要崩溃，继续往下走，降级为长方体
+        console.warn(`[降级] 方块 ${block.id} 无法生成复杂凸包，已降级为长方体。`)
       }
     }
 
@@ -530,12 +652,11 @@ export class SceneManager {
         return geo
       }
       default:
-        // 包含 cube 以及所有 fallback 降级的情况
         return new THREE.BoxGeometry(width, height, depth)
     }
   }
 
-renderBlock(block) {
+  renderBlock(block) {
     const geometry = this._createGeometry(block)
     const originalColor = block.color || '#888888'
 
@@ -545,17 +666,13 @@ renderBlock(block) {
 
     const mesh = new THREE.Mesh(geometry, material)
     mesh.position.set(block.position.x, block.position.z, block.position.y)
-    mesh.castShadow = true
-    mesh.receiveShadow = true
+    mesh.castShadow = true; mesh.receiveShadow = true
 
-    // ★ 核心修复 1：把方块的“全部基因”存在 mesh.userData 里，死死记住！
     mesh.userData.blockId = block.id
     mesh.userData.originalColor = originalColor
     mesh.userData.blockType = block.type || 'cube'
     mesh.userData.texture = block.texture || 'AAATRIGGER'
-    // ★ 漏掉的在这里：必须保留自定义顶点，否则异形图形刷新后变回正方体！
     mesh.userData.vertices = block.vertices || null
-
     mesh.userData.baseScale = { x: block.scale.x, y: block.scale.y, z: block.scale.z }
 
     if (block.rotation) {
@@ -566,41 +683,53 @@ renderBlock(block) {
       )
     }
 
-    // ★ 新增：创建 2D 视图专用的中心十字星 (X)
+    // ★ 增加 Edge 轮廓线 (无对角线)
+    const edgesGeo = new THREE.EdgesGeometry(geometry, 15)
+    const edgesMat = new THREE.LineBasicMaterial({ color: '#4a9eff', depthTest: false })
+    const edges = new THREE.LineSegments(edgesGeo, edgesMat)
+    edges.renderOrder = 998
+    edges.visible = false
+    mesh.add(edges)
+    mesh.userData.edges = edges
+
+    // ★ 增加十字中心星
     const crossGeo = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(-16, 0, 0), new THREE.Vector3(16, 0, 0),
       new THREE.Vector3(0, -16, 0), new THREE.Vector3(0, 16, 0),
       new THREE.Vector3(0, 0, -16), new THREE.Vector3(0, 0, 16)
     ])
-    // 材质设为亮青色，关闭深度测试以保证穿透可见
     const crossMat = new THREE.LineBasicMaterial({ color: '#00ffff', depthTest: false })
     const crossMarker = new THREE.LineSegments(crossGeo, crossMat)
-    crossMarker.renderOrder = 999 // 保证在最上层
-    crossMarker.visible = false   // 默认在 3D 视图中隐藏
-
+    crossMarker.renderOrder = 999
+    crossMarker.visible = false
     mesh.add(crossMarker)
-    mesh.userData.centerMarker = crossMarker // 存入基因
+    mesh.userData.centerMarker = crossMarker
 
     this.scene.add(mesh)
     this.blockMeshes.set(block.id, mesh)
   }
 
-updateBlockMesh(id, position, scale, rotation) {
+  updateBlockMesh(id, position, scale, rotation) {
     const mesh = this.blockMeshes.get(id)
     if (!mesh) return
     if (position) mesh.position.set(position.x, position.z, position.y)
+
     if (scale) {
       mesh.geometry.dispose()
-
       const blockType = mesh.userData.blockType || 'cube'
-      // ★ 核心修复 2：重建时，把保存的顶点原封不动地喂进去
       const vertices = mesh.userData.vertices
-
       mesh.geometry = this._createGeometry({ type: blockType, scale, vertices })
+
+      // ★ 重建外框线
+      if (mesh.userData.edges) {
+        mesh.userData.edges.geometry.dispose()
+        mesh.userData.edges.geometry = new THREE.EdgesGeometry(mesh.geometry, 15)
+      }
 
       mesh.userData.baseScale = { x: scale.x, y: scale.y, z: scale.z }
       mesh.scale.set(1, 1, 1)
     }
+
     if (rotation) {
       mesh.rotation.set(
         THREE.MathUtils.degToRad(rotation.x || 0),
@@ -608,33 +737,32 @@ updateBlockMesh(id, position, scale, rotation) {
         THREE.MathUtils.degToRad(rotation.y || 0)
       )
     }
+    // 实时更新黄色的拖拽柄
+    if (this.selectedBlockId === id) this._updateResizeGizmo(id)
   }
 
-syncBlockFromMesh(blockId) {
+  syncBlockFromMesh(blockId) {
     const mesh = this.blockMeshes.get(blockId)
     if (!mesh) return null
 
     const base = mesh.userData.baseScale || { x: 64, y: 64, z: 64 }
-
-    // ★ 体验神级优化：如果异形方块被拉伸了，我们将拉伸永久“烙印”到内存的顶点坐标里！
-    // 这样导出的 .map 将完美拥有缩放后的全新体积！
     let newVertices = mesh.userData.vertices
+
     if (newVertices && (mesh.scale.x !== 1 || mesh.scale.y !== 1 || mesh.scale.z !== 1)) {
       newVertices = newVertices.map(v => ({
         x: v.x * mesh.scale.x,
-        y: v.y * mesh.scale.y, // Web Y 对应 Three 的 Y
-        z: v.z * mesh.scale.z  // Web Z 对应 Three 的 Z
+        y: v.y * mesh.scale.y,
+        z: v.z * mesh.scale.z
       }))
-      mesh.userData.vertices = newVertices // 永久更新内存里的顶点
+      mesh.userData.vertices = newVertices
     }
 
-    // ★ 核心修复 3：同步时必须把所有属性原封不动发给服务器 (特别是 type 和 vertices)
     return {
       id: blockId,
       type: mesh.userData.blockType,
       color: mesh.userData.originalColor,
       texture: mesh.userData.texture,
-      vertices: newVertices, // ★ 发送顶点数据！
+      vertices: newVertices,
       position: { x: mesh.position.x, y: mesh.position.z, z: mesh.position.y },
       rotation: {
         x: THREE.MathUtils.radToDeg(mesh.rotation.x),
@@ -657,6 +785,10 @@ syncBlockFromMesh(blockId) {
     mesh.material.dispose()
     this.blockMeshes.delete(id)
     this.transformControls.detach()
+    if (this.selectedBlockId === id) {
+      this.selectedBlockId = null
+      this._updateResizeGizmo(null)
+    }
   }
 
   setBlockLocked(blockId, locked) {
@@ -669,39 +801,10 @@ syncBlockFromMesh(blockId) {
     }
   }
 
-  // ==========================================================
-  // ★ 2D线框与3D实体 智能切换引擎
-  // ==========================================================
-  setRenderMode(mode) {
-    const isWireframe = (mode === 'wireframe')
-
-    for (const [id, mesh] of this.blockMeshes) {
-      // 切换线框状态
-      mesh.material.wireframe = isWireframe
-      mesh.material.transparent = !isWireframe
-      mesh.material.opacity = isWireframe ? 1.0 : 0.9
-
-      // 线框模式下，使用高亮青色；实体模式下，恢复原有颜色
-      const isLocked = mesh.material.opacity === 0.5 // 互斥锁检测
-      if (isWireframe) {
-        mesh.material.color.set('#4a9eff')
-      } else {
-        mesh.material.color.set(isLocked ? '#555555' : (mesh.userData.originalColor || '#888888'))
-      }
-
-      // 切换中心十字星的显示
-      if (mesh.userData.centerMarker) {
-        mesh.userData.centerMarker.visible = isWireframe
-      }
-    }
-  }
-
   updateCursor(userId, userName, position) {
     let cursor = this.cursors.get(userId)
     if (!cursor) {
-      const sphere = new THREE.Mesh(
-        new THREE.SphereGeometry(6, 8, 8), new THREE.MeshBasicMaterial({ color: '#ff4444' })
-      )
+      const sphere = new THREE.Mesh(new THREE.SphereGeometry(6, 8, 8), new THREE.MeshBasicMaterial({ color: '#ff4444' }))
       sphere.position.set(position.x, position.z, position.y)
       this.scene.add(sphere)
       this.cursors.set(userId, sphere)
@@ -712,9 +815,7 @@ syncBlockFromMesh(blockId) {
 
   removeCursor(userId) {
     const cursor = this.cursors.get(userId)
-    if (cursor) {
-      this.scene.remove(cursor); this.cursors.delete(userId)
-    }
+    if (cursor) { this.scene.remove(cursor); this.cursors.delete(userId) }
   }
 
   _animate() {
@@ -726,41 +827,30 @@ syncBlockFromMesh(blockId) {
 
   setRenderCallback(callback) { this._onRender = callback }
 
-// 右键/中键/左+右键 第一人称视角旋转 (无视视口边界，丝滑拖拽)
   _orbitCamera(dx, dy) {
-    // 强制锁定主透视相机，不再受鼠标滑过其他正交视图的干扰
     const camera = this.camera
     if (!camera || !camera.isPerspectiveCamera) return
-
-    // ★ 使用可配置的灵敏度
     const euler = new THREE.Euler(0, 0, 0, 'YXZ')
     euler.setFromQuaternion(camera.quaternion)
-
     euler.y -= dx * this.lookSensitivity
     euler.x -= dy * this.lookSensitivity
-
     const PI_2 = Math.PI / 2 - 0.01
     euler.x = Math.max(-PI_2, Math.min(PI_2, euler.x))
-
     camera.quaternion.setFromEuler(euler)
   }
 
-_updateCamera() {
+  _updateCamera() {
     const camera = this._getActiveCamera ? this._getActiveCamera() : this.camera
     if (!camera) return
-
     const speed = this.moveSpeed * 0.016
 
-    // 1. 第一人称飞行视角 (透视相机)
     if (camera.isPerspectiveCamera) {
       const dir = new THREE.Vector3()
       const forward = new THREE.Vector3()
       camera.getWorldDirection(forward)
-      forward.y = 0
-      forward.normalize()
+      forward.y = 0; forward.normalize()
       const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize()
 
-      // ★ 移除了所有的 arrowup/down 等，只保留 WASD + QE
       if (this.keys['w']) dir.add(forward)
       if (this.keys['s']) dir.add(forward.clone().negate())
       if (this.keys['a']) dir.add(right.clone().negate())
@@ -772,13 +862,8 @@ _updateCamera() {
         dir.normalize().multiplyScalar(speed)
         camera.position.add(dir)
       }
-    }
-    // 2. 正交视图平面平移 (三视图专属)
-    else if (camera.isOrthographicCamera) {
-      let dx = 0
-      let dy = 0
-
-      // ★ 移除了所有的 arrowup/down 等
+    } else if (camera.isOrthographicCamera) {
+      let dx = 0, dy = 0
       if (this.keys['w']) dy += 1
       if (this.keys['s']) dy -= 1
       if (this.keys['a']) dx -= 1
@@ -793,55 +878,31 @@ _updateCamera() {
     }
   }
 
-  // ==========================================================
-  // ★ 视口感知的方块微调算法 (Nudging)
-  // ==========================================================
   _nudgeSelectedBlock(key) {
     const obj = this.transformControls.object
     if (!obj || !obj.userData.blockId) return
 
-    // 计算单次移动步长
     const step = this.isSnapEnabled ? this.currentGridSize : 1
     let dx = 0, dy = 0, dz = 0
 
-    // 判断用户当前目光落在哪一个视图里
     let view = 'top'
     if (this._viewportManager) {
-      view = this._viewportManager.viewMode === 'quad'
-        ? this._viewportManager.activeQuadView
-        : this._viewportManager.viewMode
+      view = this._viewportManager.viewMode === 'quad' ? this._viewportManager.activeQuadView : this._viewportManager.viewMode
     }
 
-    // 根据视口朝向，完美映射方向键的空间物理意义
-    // 提示: Three.js 中 X=左右, Y=上下(高度), Z=前后(深度)
     if (view === 'top' || view === 'perspective') {
-      // 顶视图向下看，映射到 XZ 平面
-      if (key === 'ArrowUp') dz = -step
-      if (key === 'ArrowDown') dz = step
-      if (key === 'ArrowLeft') dx = -step
-      if (key === 'ArrowRight') dx = step
-    }
-    else if (view === 'front') {
-      // 前视图向前看，映射到 XY 平面
-      if (key === 'ArrowUp') dy = step
-      if (key === 'ArrowDown') dy = -step
-      if (key === 'ArrowLeft') dx = -step
-      if (key === 'ArrowRight') dx = step
-    }
-    else if (view === 'side') {
-      // 侧视图向左看 (沿着X轴负方向)，映射到 ZY 平面
-      if (key === 'ArrowUp') dy = step
-      if (key === 'ArrowDown') dy = -step
-      if (key === 'ArrowLeft') dz = step
-      if (key === 'ArrowRight') dz = -step
+      if (key === 'ArrowUp') dz = -step; if (key === 'ArrowDown') dz = step
+      if (key === 'ArrowLeft') dx = -step; if (key === 'ArrowRight') dx = step
+    } else if (view === 'front') {
+      if (key === 'ArrowUp') dy = step; if (key === 'ArrowDown') dy = -step
+      if (key === 'ArrowLeft') dx = -step; if (key === 'ArrowRight') dx = step
+    } else if (view === 'side') {
+      if (key === 'ArrowUp') dy = step; if (key === 'ArrowDown') dy = -step
+      if (key === 'ArrowLeft') dz = step; if (key === 'ArrowRight') dz = -step
     }
 
-    // 实施移动
-    obj.position.x += dx
-    obj.position.y += dy
-    obj.position.z += dz
+    obj.position.x += dx; obj.position.y += dy; obj.position.z += dz
 
-    // 触发全局同步事件
     if (this.onBlockMoved) {
       const data = this.syncBlockFromMesh(obj.userData.blockId)
       if (data) this.onBlockMoved(obj.userData.blockId, data)
