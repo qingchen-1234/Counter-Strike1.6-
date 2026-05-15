@@ -189,7 +189,7 @@ export class ViewportManager {
     }
   }
 
-// ========== 渲染 ==========
+  // ========== 渲染 (含智能网格与线框切换) ==========
   render(time) {
     if (!this.renderer) return
     const canvas = this.renderer.domElement
@@ -209,54 +209,69 @@ export class ViewportManager {
       r.setScissor(vp.x, glY, vp.w, vp.h)
       r.setViewport(vp.x, glY, vp.w, vp.h)
 
-      scene.background = (name === 'perspective')
-        ? new THREE.Color('#1a1a2e')
-        : new THREE.Color('#121826')
-
-      const camera = name === 'perspective' ? this.sm.camera
+      const isPerspective = (name === 'perspective')
+      const camera = isPerspective ? this.sm.camera
         : name === 'top' ? this.topCamera
         : name === 'front' ? this.frontCamera
         : this.sideCamera
 
-      // ==========================================================
-      // ★ 根据当前渲染的视口，动态隐藏/显示网格
-      // ==========================================================
-      // if (this.sm.gridHelpers) {
-      //   for (const grid of this.sm.gridHelpers) {
-      //     // 只有非透视(非自由)视角，才显示密集网格
-      //     grid.visible = (name !== 'perspective')
-      //   }
-      // }
+      // 1. 设置背景色
+      scene.background = isPerspective
+        ? new THREE.Color('#1a1a2e')  // 3D 视图背景
+        : new THREE.Color('#0a0a14')  // 2D 视图背景 (更深，突出线框)
 
-      // 防止任何视图发生网格拉伸变形
+      // 2. ★ 核心：渲染模式切换
+      this.sm.setRenderMode(isPerspective ? 'solid' : 'wireframe')
+
+      // 3. ★ 核心：智能网格调度
+      if (this.sm.gridXZ_minor) {
+        // 先隐藏所有网格
+        for (const g of this.sm.gridHelpers) g.visible = false
+
+        if (!isPerspective) {
+          // 根据当前正交相机的视野宽度(缩放程度)决定显示哪些网格
+          const viewWidth = camera.right - camera.left
+          const showMinor = viewWidth < 6000  // 放大时显示密网格
+          const showMajor = viewWidth < 30000 // 缩小时只显示粗网格
+
+          if (name === 'top') {
+            if (showMinor) this.sm.gridXZ_minor.visible = true
+            if (showMajor) this.sm.gridXZ_major.visible = true
+          } else if (name === 'front') {
+            if (showMinor) this.sm.gridXY_minor.visible = true
+            if (showMajor) this.sm.gridXY_major.visible = true
+          } else if (name === 'side') {
+            if (showMinor) this.sm.gridYZ_minor.visible = true
+            if (showMajor) this.sm.gridYZ_major.visible = true
+          }
+        }
+      }
+
+      // 4. 防止视图形变
       const aspect = vp.w / vp.h
       if (camera.isOrthographicCamera) {
         const halfH = (camera.top - camera.bottom) / 2
         const halfW = halfH * aspect
         if (camera.right !== halfW) {
-          camera.left = -halfW
-          camera.right = halfW
-          camera.updateProjectionMatrix()
+          camera.left = -halfW; camera.right = halfW; camera.updateProjectionMatrix()
         }
       } else if (camera.isPerspectiveCamera) {
         if (camera.aspect !== aspect) {
-          camera.aspect = aspect
-          camera.updateProjectionMatrix()
+          camera.aspect = aspect; camera.updateProjectionMatrix()
         }
       }
 
-      // 仅在当前激活视口显示 TransformControls
+      // 5. 变换控件显示逻辑
       const tc = this.sm.transformControls
       const isActive = (this.viewMode === 'quad' && this.activeQuadView === name) ||
                        (this.viewMode !== 'quad' && this.viewMode === name) ||
                        (this.viewMode !== 'quad' && name === this.viewMode)
-      if (tc) {
-        tc.visible = isActive && (tc.object != null)
-      }
+      if (tc) tc.visible = isActive && (tc.object != null)
 
       r.render(scene, camera)
     }
 
+    // 恢复现场
     scene.background = origBg
     r.setScissorTest(false)
   }

@@ -21,7 +21,7 @@
       <button class="tool-btn snap-btn" :class="{ active: isSnapEnabled }" @click="$emit('toggle-snap')">
         🧲 {{ isSnapEnabled ? 'ON' : 'OFF' }}
       </button>
-      <select class="grid-select" :value="gridSize" @change="onGridChange" :disabled="!isSnapEnabled">
+      <select class="grid-select" :value="gridSize" @change="onGridChange">
         <option v-for="opt in gridOptions" :key="opt" :value="opt">{{ opt }}</option>
       </select>
     </div>

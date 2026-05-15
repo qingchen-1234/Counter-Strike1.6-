@@ -565,6 +565,22 @@ renderBlock(block) {
         THREE.MathUtils.degToRad(block.rotation.y || 0)
       )
     }
+
+    // ★ 新增：创建 2D 视图专用的中心十字星 (X)
+    const crossGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-16, 0, 0), new THREE.Vector3(16, 0, 0),
+      new THREE.Vector3(0, -16, 0), new THREE.Vector3(0, 16, 0),
+      new THREE.Vector3(0, 0, -16), new THREE.Vector3(0, 0, 16)
+    ])
+    // 材质设为亮青色，关闭深度测试以保证穿透可见
+    const crossMat = new THREE.LineBasicMaterial({ color: '#00ffff', depthTest: false })
+    const crossMarker = new THREE.LineSegments(crossGeo, crossMat)
+    crossMarker.renderOrder = 999 // 保证在最上层
+    crossMarker.visible = false   // 默认在 3D 视图中隐藏
+
+    mesh.add(crossMarker)
+    mesh.userData.centerMarker = crossMarker // 存入基因
+
     this.scene.add(mesh)
     this.blockMeshes.set(block.id, mesh)
   }
@@ -650,6 +666,33 @@ syncBlockFromMesh(blockId) {
       mesh.material.color.set('#555555'); mesh.material.opacity = 0.5
     } else {
       mesh.material.color.set(mesh.userData.originalColor || '#888888'); mesh.material.opacity = 0.9
+    }
+  }
+
+  // ==========================================================
+  // ★ 2D线框与3D实体 智能切换引擎
+  // ==========================================================
+  setRenderMode(mode) {
+    const isWireframe = (mode === 'wireframe')
+
+    for (const [id, mesh] of this.blockMeshes) {
+      // 切换线框状态
+      mesh.material.wireframe = isWireframe
+      mesh.material.transparent = !isWireframe
+      mesh.material.opacity = isWireframe ? 1.0 : 0.9
+
+      // 线框模式下，使用高亮青色；实体模式下，恢复原有颜色
+      const isLocked = mesh.material.opacity === 0.5 // 互斥锁检测
+      if (isWireframe) {
+        mesh.material.color.set('#4a9eff')
+      } else {
+        mesh.material.color.set(isLocked ? '#555555' : (mesh.userData.originalColor || '#888888'))
+      }
+
+      // 切换中心十字星的显示
+      if (mesh.userData.centerMarker) {
+        mesh.userData.centerMarker.visible = isWireframe
+      }
     }
   }
 

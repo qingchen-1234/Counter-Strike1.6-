@@ -1,297 +1,221 @@
-### 第一步：修复“方块加载中断”并大幅提升默认视野距离
+ 3D 编辑器在正交视图（2D视图）下最核心的痛点：**遮挡与网格密度**。
 
-我们要给 3D 几何体生成加上“防弹衣”（`try...catch`），一旦遇到无法生成凸包的破损几何体，我们自动给它降级为一个对应尺寸的长方体，这样绝不会中断加载！同时开放速度和视野的设置。
+J.A.C.K. 和 Hammer 编辑器之所以好用，正是因为它们在 3D 视图使用**实体渲染（Solid）**，而在 2D 三视图强制使用**线框渲染（Wireframe）**，并且配合了**视口智能网格**。
 
-**请修改 `client/src/engine/SceneManager.js`：**
 
-1. 找到 `constructor()`，增加几个属性：
-```javascript
-    this.moveSpeed = 1500 // ★ 默认速度从 300 提升到 1500，走得更快
-    this.lookSensitivity = 0.003 // 鼠标灵敏度
-    // ... 原有代码
+---
+
+### 第一步：解除工具栏网格大小与吸附的强制绑定 - (此步骤已执行，直接进行第二步)
+
+打开 `client/src/components/Toolbar.vue`，找到下拉菜单 `<select>`，**删掉 `disabled` 属性**：
+
+```html
+<!-- 修改前： -->
+<select class="grid-select" :value="gridSize" @change="onGridChange" :disabled="!isSnapEnabled">
+
+<!-- ✅ 修改后： -->
+<select class="grid-select" :value="gridSize" @change="onGridChange">
 ```
 
-2. 找到 `init(canvas, viewportEl)`，修改透视相机的 `far` 值（从 `10000` 改为 `60000`）：
-```javascript
-    this.camera = new THREE.PerspectiveCamera(
-      70, viewportEl.clientWidth / viewportEl.clientHeight, 1, 60000 // ★ 增加视野范围
-    )
-```
+---
 
-3. 找到 `_createGeometry(block)` 方法，**替换**为以下防弹版本：
-```javascript
-  // ---- 方块可视化 (防弹版) ----
-  _createGeometry(block) {
-    const { type, scale, vertices } = block
-    const width = scale.x; const depth = scale.y; const height = scale.z
-    const hx = width / 2; const hy = height / 2; const hz = depth / 2
+### 第二步：重构 `SceneManager.js` 的材质与网格系统
 
-    // ★ 核心修复：添加 try...catch 防崩溃保护
-    if (type === 'custom' && vertices && vertices.length >= 4) {
-      try {
-        const points = vertices.map(v => new THREE.Vector3(v.x, v.y, v.z))
-        return new ConvexGeometry(points)
-      } catch (err) {
-        console.warn(`[降级] 方块 ${block.id} 无法生成复杂凸包，已降级为标准长方体。原因:`, err.message)
-        // 发生错误时，不要崩溃，继续往下走，降级为长方体
-      }
+我们要给每个方块加上一个**中心十字星（X）**，并且编写一套“智能双层网格”和“线框/实体切换”逻辑。
+
+请在 `client/src/engine/SceneManager.js` 中进行以下替换：
+
+**1. 替换 `_rebuildGrids` 方法（构建智能双层网格，且永远置于底层）：**
+```javascript
+  _rebuildGrids() {
+    for (const g of this.gridHelpers) {
+      this.scene.remove(g); g.geometry.dispose(); g.material.dispose()
+    }
+    this.gridHelpers = []
+
+    const range = 16384
+    const buildGridLayer = (size, color, isMajor) => {
+      const divisions = Math.floor(range / size)
+      const grid = new THREE.GridHelper(range, divisions, color, color)
+      grid.material.transparent = true
+      grid.material.opacity = isMajor ? 0.5 : 0.2
+      grid.material.depthWrite = false
+      // ★ 核心：让网格永远在最底层渲染，绝不遮挡任何方块线框！
+      grid.renderOrder = -1
+      return grid
     }
 
-    switch (type) {
-      case 'ramp': {
-        const shape = new THREE.Shape()
-        shape.moveTo(-hx, -hy); shape.lineTo( hx, -hy); shape.lineTo( hx,  hy); shape.lineTo(-hx, -hy)
-        const geo = new THREE.ExtrudeGeometry(shape, { depth: depth, bevelEnabled: false })
-        geo.translate(0, 0, -hz)
-        return geo
+    // XZ 平面 (顶视图)
+    this.gridXZ_minor = buildGridLayer(this.currentGridSize, '#333344', false)
+    this.gridXZ_major = buildGridLayer(Math.max(256, this.currentGridSize * 4), '#555566', true)
+    this.scene.add(this.gridXZ_minor, this.gridXZ_major)
+    this.gridHelpers.push(this.gridXZ_minor, this.gridXZ_major)
+
+    // XY 平面 (前视图)
+    this.gridXY_minor = buildGridLayer(this.currentGridSize, '#333344', false); this.gridXY_minor.rotation.x = -Math.PI / 2
+    this.gridXY_major = buildGridLayer(Math.max(256, this.currentGridSize * 4), '#555566', true); this.gridXY_major.rotation.x = -Math.PI / 2
+    this.scene.add(this.gridXY_minor, this.gridXY_major)
+    this.gridHelpers.push(this.gridXY_minor, this.gridXY_major)
+
+    // YZ 平面 (侧视图)
+    this.gridYZ_minor = buildGridLayer(this.currentGridSize, '#333344', false); this.gridYZ_minor.rotation.z = Math.PI / 2
+    this.gridYZ_major = buildGridLayer(Math.max(256, this.currentGridSize * 4), '#555566', true); this.gridYZ_major.rotation.z = Math.PI / 2
+    this.scene.add(this.gridYZ_minor, this.gridYZ_major)
+    this.gridHelpers.push(this.gridYZ_minor, this.gridYZ_major)
+  }
+```
+
+**2. 找到 `renderBlock(block)`，在末尾给方块加上中心十字（X）：**
+```javascript
+    // ... 原有逻辑 (mesh.rotation.set...)
+
+    // ★ 新增：创建 2D 视图专用的中心十字星 (X)
+    const crossGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-16, 0, 0), new THREE.Vector3(16, 0, 0),
+      new THREE.Vector3(0, -16, 0), new THREE.Vector3(0, 16, 0),
+      new THREE.Vector3(0, 0, -16), new THREE.Vector3(0, 0, 16)
+    ])
+    // 材质设为亮青色，关闭深度测试以保证穿透可见
+    const crossMat = new THREE.LineBasicMaterial({ color: '#00ffff', depthTest: false })
+    const crossMarker = new THREE.LineSegments(crossGeo, crossMat)
+    crossMarker.renderOrder = 999 // 保证在最上层
+    crossMarker.visible = false   // 默认在 3D 视图中隐藏
+
+    mesh.add(crossMarker)
+    mesh.userData.centerMarker = crossMarker // 存入基因
+
+    this.scene.add(mesh)
+    this.blockMeshes.set(block.id, mesh)
+  }
+```
+*(注意 `updateBlockMesh` 里面重构 geometry 时，原来挂载的 crossMarker 会自动保留，不需要额外修改。)*
+
+**3. 在 `SceneManager.js` 中新增渲染模式切换方法：**
+找个空白地方（比如 `setBlockLocked` 附近）加上这个函数：
+```javascript
+  // ==========================================================
+  // ★ 2D线框与3D实体 智能切换引擎
+  // ==========================================================
+  setRenderMode(mode) {
+    const isWireframe = (mode === 'wireframe')
+
+    for (const [id, mesh] of this.blockMeshes) {
+      // 切换线框状态
+      mesh.material.wireframe = isWireframe
+      mesh.material.transparent = !isWireframe
+      mesh.material.opacity = isWireframe ? 1.0 : 0.9
+
+      // 线框模式下，使用高亮青色；实体模式下，恢复原有颜色
+      const isLocked = mesh.material.opacity === 0.5 // 互斥锁检测
+      if (isWireframe) {
+        mesh.material.color.set('#4a9eff')
+      } else {
+        mesh.material.color.set(isLocked ? '#555555' : (mesh.userData.originalColor || '#888888'))
       }
-      case 'wedge': {
-        const shape = new THREE.Shape()
-        shape.moveTo(-hx, -hy); shape.lineTo( hx, -hy); shape.lineTo( 0,   hy); shape.closePath()
-        const geo = new THREE.ExtrudeGeometry(shape, { depth: depth, bevelEnabled: false })
-        geo.translate(0, 0, -hz)
-        return geo
+
+      // 切换中心十字星的显示
+      if (mesh.userData.centerMarker) {
+        mesh.userData.centerMarker.visible = isWireframe
       }
-      default:
-        // 包含 cube 以及所有 fallback 降级的情况
-        return new THREE.BoxGeometry(width, height, depth)
     }
   }
 ```
 
-4. 找到 `_orbitCamera(dx, dy)`，更新鼠标灵敏度：
+---
+
+### 第三步：修改 `client/src/engine/ViewportManager.js`
+这是最神奇的一步！我们将利用 WebGL 的渲染循环，在画 3D 视角前把世界变成实体，在画 2D 视角前把世界变成线框，并根据缩放智能隐藏细密网格！
+
+找到 `render(time)` 方法，**将其完全替换**为以下代码：
+
 ```javascript
-  _orbitCamera(dx, dy) {
-    const camera = this.camera
-    if (!camera || !camera.isPerspectiveCamera) return
+  // ========== 渲染 (含智能网格与线框切换) ==========
+  render(time) {
+    if (!this.renderer) return
+    const canvas = this.renderer.domElement
+    this.canvasWidth = canvas.clientWidth
+    this.canvasHeight = canvas.clientHeight
+    this._updateViewports()
 
-    // ★ 使用可配置的灵敏度
-    const euler = new THREE.Euler(0, 0, 0, 'YXZ')
-    euler.setFromQuaternion(camera.quaternion)
+    const r = this.renderer
+    const scene = this.sm.scene
+    const origBg = scene.background
 
-    euler.y -= dx * this.lookSensitivity
-    euler.x -= dy * this.lookSensitivity
+    r.setScissorTest(true)
+    const vpEntries = Object.entries(this.viewports)
 
-    const PI_2 = Math.PI / 2 - 0.01
-    euler.x = Math.max(-PI_2, Math.min(PI_2, euler.x))
+    for (const [name, vp] of vpEntries) {
+      const glY = this.canvasHeight - vp.y - vp.h
+      r.setScissor(vp.x, glY, vp.w, vp.h)
+      r.setViewport(vp.x, glY, vp.w, vp.h)
 
-    camera.quaternion.setFromEuler(euler)
+      const isPerspective = (name === 'perspective')
+      const camera = isPerspective ? this.sm.camera
+        : name === 'top' ? this.topCamera
+        : name === 'front' ? this.frontCamera
+        : this.sideCamera
+
+      // 1. 设置背景色
+      scene.background = isPerspective
+        ? new THREE.Color('#1a1a2e')  // 3D 视图背景
+        : new THREE.Color('#0a0a14')  // 2D 视图背景 (更深，突出线框)
+
+      // 2. ★ 核心：渲染模式切换
+      this.sm.setRenderMode(isPerspective ? 'solid' : 'wireframe')
+
+      // 3. ★ 核心：智能网格调度
+      if (this.sm.gridXZ_minor) {
+        // 先隐藏所有网格
+        for (const g of this.sm.gridHelpers) g.visible = false
+
+        if (!isPerspective) {
+          // 根据当前正交相机的视野宽度(缩放程度)决定显示哪些网格
+          const viewWidth = camera.right - camera.left
+          const showMinor = viewWidth < 6000  // 放大时显示密网格
+          const showMajor = viewWidth < 30000 // 缩小时只显示粗网格
+
+          if (name === 'top') {
+            if (showMinor) this.sm.gridXZ_minor.visible = true
+            if (showMajor) this.sm.gridXZ_major.visible = true
+          } else if (name === 'front') {
+            if (showMinor) this.sm.gridXY_minor.visible = true
+            if (showMajor) this.sm.gridXY_major.visible = true
+          } else if (name === 'side') {
+            if (showMinor) this.sm.gridYZ_minor.visible = true
+            if (showMajor) this.sm.gridYZ_major.visible = true
+          }
+        }
+      }
+
+      // 4. 防止视图形变
+      const aspect = vp.w / vp.h
+      if (camera.isOrthographicCamera) {
+        const halfH = (camera.top - camera.bottom) / 2
+        const halfW = halfH * aspect
+        if (camera.right !== halfW) {
+          camera.left = -halfW; camera.right = halfW; camera.updateProjectionMatrix()
+        }
+      } else if (camera.isPerspectiveCamera) {
+        if (camera.aspect !== aspect) {
+          camera.aspect = aspect; camera.updateProjectionMatrix()
+        }
+      }
+
+      // 5. 变换控件显示逻辑
+      const tc = this.sm.transformControls
+      const isActive = (this.viewMode === 'quad' && this.activeQuadView === name) ||
+                       (this.viewMode !== 'quad' && this.viewMode === name) ||
+                       (this.viewMode !== 'quad' && name === this.viewMode)
+      if (tc) tc.visible = isActive && (tc.object != null)
+
+      r.render(scene, camera)
+    }
+
+    // 恢复现场
+    scene.background = origBg
+    r.setScissorTest(false)
   }
 ```
 
 ---
 
-### 第二步：修改 `client/src/engine/ViewportManager.js`
-同步扩大正交相机的视野距离，否则三视图的大地图也会被截断。
-
-找到 `init(width, height)`，将里面的 `20000` 全部改为 `60000`：
-```javascript
-    const size = 1000
-    // ★ 把 20000 改为 60000
-    this.topCamera = new THREE.OrthographicCamera(-size, size, size, -size, 0.1, 60000)
-    this.topCamera.position.set(0, 30000, 0) // 高度也拉高
-    this.topCamera.lookAt(0, 0, 0)
-
-    this.frontCamera = new THREE.OrthographicCamera(-size, size, size, -size, 0.1, 60000)
-    this.frontCamera.position.set(0, 0, 30000)
-    this.frontCamera.lookAt(0, 0, 0)
-
-    this.sideCamera = new THREE.OrthographicCamera(-size, size, size, -size, 0.1, 60000)
-    this.sideCamera.position.set(30000, 0, 0)
-    this.sideCamera.lookAt(0, 0, 0)
-```
-
----
-
-### 第三步：优化 UI 工具栏 (`client/src/components/Toolbar.vue`)
-精简高度，删除文本提示，替换为精巧的“帮助”和“设置”按钮。
-
-```vue
-<template>
-  <div class="toolbar">
-    <span class="logo">🧱 CSMapCollab</span>
-
-    <div class="file-info" :title="isDirty ? '有未保存的修改' : '已保存'">
-      <span class="file-name">📝 {{ mapName }}.map</span>
-      <span v-if="isDirty" class="dirty-star">*</span>
-    </div>
-
-    <div class="tool-group divider">
-      <button class="tool-btn primary" @click="$emit('add-block')">➕ 新建</button>
-      <button class="tool-btn danger" @click="$emit('delete-block')">🗑 删除</button>
-    </div>
-
-    <div class="tool-group divider">
-      <button class="tool-btn load" @click="$emit('request-load')">📂 打开</button>
-      <button class="tool-btn success" @click="$emit('export-map')">💾 导出</button>
-    </div>
-
-    <div class="tool-group divider">
-      <button class="tool-btn snap-btn" :class="{ active: isSnapEnabled }" @click="$emit('toggle-snap')">
-        🧲 {{ isSnapEnabled ? 'ON' : 'OFF' }}
-      </button>
-      <select class="grid-select" :value="gridSize" @change="onGridChange" :disabled="!isSnapEnabled">
-        <option v-for="opt in gridOptions" :key="opt" :value="opt">{{ opt }}</option>
-      </select>
-    </div>
-
-    <div class="tool-group spacer"></div> <!-- 将右侧推过去 -->
-
-    <!-- ★ 新增：设置与帮助按钮 -->
-    <div class="tool-group">
-      <button class="tool-btn icon-btn" @click="$emit('open-settings')" title="编辑器设置">⚙️</button>
-      <button class="tool-btn icon-btn" @click="$emit('open-help')" title="操作说明">❓</button>
-    </div>
-
-    <div class="tool-group">
-      <span v-if="isInRoom" class="status-badge online">🟢 协作中</span>
-      <span v-else class="status-badge offline">⚫ 单机</span>
-    </div>
-  </div>
-</template>
-
-<script setup>
-import { BlockManager } from '../engine/BlockManager.js'
-
-const props = defineProps({
-  isInRoom: { type: Boolean, default: false },
-  gridSize: { type: Number, default: 16 },
-  mapName: { type: String, default: '未命名地图' },
-  isDirty: { type: Boolean, default: false },
-  isSnapEnabled: { type: Boolean, default: true }
-})
-
-// 增加 open-settings 和 open-help
-const emit = defineEmits(['add-block', 'delete-block', 'export-map', 'request-load', 'update-grid-size', 'toggle-snap', 'open-settings', 'open-help'])
-
-const gridOptions = BlockManager.getGridOptions()
-
-function onGridChange(e) {
-  emit('update-grid-size', Number(e.target.value))
-}
-</script>
-
-<style scoped>
-/* ★ 优化：降低 Toolbar 高度，减少 padding，更加紧凑 */
-.toolbar { display: flex; align-items: center; gap: 8px; padding: 4px 8px; background: #16213e; border-bottom: 1px solid #0f3460; height: 36px; min-height: 36px; box-sizing: border-box; }
-.logo { font-weight: bold; font-size: 14px; color: #e94560; white-space: nowrap; margin-right: 4px; }
-.file-info { display: flex; align-items: center; background: #1a1a2e; padding: 3px 8px; border-radius: 4px; border: 1px solid #0f3460; font-size: 12px; color: #ccc; }
-.dirty-star { color: #ffcc00; font-weight: bold; margin-left: 4px; font-size: 14px; line-height: 1; }
-.tool-group { display: flex; gap: 4px; align-items: center; }
-.divider { padding-right: 8px; border-right: 1px solid #2a3b5c; }
-.spacer { flex: 1; border: none; } /* 撑开中间，把右侧按钮挤到右边 */
-
-.tool-btn { padding: 4px 10px; border: 1px solid #333; border-radius: 4px; background: #1a1a2e; color: #ccc; cursor: pointer; font-size: 12px; transition: all 0.2s; white-space: nowrap; }
-.tool-btn:hover { background: #0f3460; border-color: #e94560; }
-.tool-btn.primary { border-color: #4a9eff; color: #4a9eff; }
-.tool-btn.danger  { border-color: #ff6b6b; color: #ff6b6b; }
-.tool-btn.success { border-color: #51cf66; color: #51cf66; }
-.tool-btn.load    { border-color: #ffcc00; color: #ffcc00; }
-.icon-btn { padding: 4px 8px; font-size: 14px; background: transparent; border-color: #2a3b5c; }
-.icon-btn:hover { background: #2a3b5c; }
-
-.snap-btn { border-color: #555; color: #888; }
-.snap-btn.active { border-color: #ffcc00; color: #ffcc00; background: rgba(255, 204, 0, 0.1); }
-.grid-select:disabled { opacity: 0.5; cursor: not-allowed; }
-.grid-select { background: #1a1a2e; border: 1px solid #0f3460; border-radius: 4px; color: #ccc; padding: 2px 4px; font-size: 12px; outline: none; cursor: pointer; }
-.status-badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; }
-.status-badge.online { background: #1a3a1a; color: #51cf66; }
-.status-badge.offline { background: #2a2a2a; color: #aaa; }
-</style>
-```
-
----
-
-### 第四步：在 `App.vue` 中接入弹窗和挡视野的提示移除
-最后，我们删除挡视野的文字，并实现真正的弹出层！
-
-1. 在 `App.vue` 模板中，**彻底删除**以下这行代码（它就是挡视野的罪魁祸首）：
-```html
-<!-- 删除这一行！ -->
-<div class="viewport-hint">WASD | 右键/中键旋转 | 滚轮缩放 | Shift加速 | 左键选中 | Tab切换 ... </div>
-```
-
-2. 绑定 `Toolbar` 的新事件：
-```html
-    <Toolbar
-      :is-in-room="isInRoom"
-      :grid-size="currentGridSize"
-      :map-name="currentMapName"
-      :is-dirty="isDirty"
-      :is-snap-enabled="isSnapEnabled"
-      @add-block="onAddBlock"
-      @delete-block="onDeleteBlock"
-      @export-map="onExportMap"
-      @request-load="onRequestLoadMap"
-      @update-grid-size="onUpdateGridSize"
-      @toggle-snap="onToggleSnap"
-      @open-settings="showSettingsModal = true"
-      @open-help="showHelpModal = true"
-    />
-```
-
-3. 在 `App.vue` 模板的 `<div v-if="showUnsavedDialog"...>` 弹窗**下方**，加入两个新的弹窗：
-```html
-    <!-- ★ 帮助说明弹窗 -->
-    <div v-if="showHelpModal" class="modal-overlay" @click.self="showHelpModal = false">
-      <div class="modal-box help-box">
-        <h4>❓ 操作快捷键</h4>
-        <ul>
-          <li><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> 漫游视角/平移视图</li>
-          <li><kbd>右键</kbd> 拖拽旋转 3D 视角</li>
-          <li><kbd>滚轮</kbd> 向鼠标位置缩放</li>
-          <li><kbd>Shift</kbd> (按住) 加速移动</li>
-          <li><kbd>方向键</kbd> 精准微调选中方块 (Nudge)</li>
-          <li><kbd>G</kbd> 开启/关闭网格吸附</li>
-          <li><kbd>Tab</kbd> 在四视图中循环切换活动视口</li>
-          <li><kbd>左键</kbd> 选中场景中的方块进行编辑</li>
-        </ul>
-        <button class="modal-btn confirm" @click="showHelpModal = false">我知道了</button>
-      </div>
-    </div>
-
-    <!-- ★ 设置弹窗 -->
-    <div v-if="showSettingsModal" class="modal-overlay" @click.self="showSettingsModal = false">
-      <div class="modal-box">
-        <h4>⚙️ 编辑器设置</h4>
-        <div class="prop-section">
-          <label>移动速度 (WASD)</label>
-          <input type="range" min="100" max="5000" step="100" v-model="editorSettings.moveSpeed" @input="applySettings" />
-          <div class="range-val">{{ editorSettings.moveSpeed }}</div>
-        </div>
-        <div class="prop-section">
-          <label>鼠标灵敏度 (视角旋转)</label>
-          <input type="range" min="0.001" max="0.01" step="0.001" v-model="editorSettings.lookSpeed" @input="applySettings" />
-          <div class="range-val">{{ editorSettings.lookSpeed }}</div>
-        </div>
-        <button class="modal-btn confirm mt-3" @click="showSettingsModal = false">关闭</button>
-      </div>
-    </div>
-```
-
-4. 在 `<script setup>` 中添加状态和应用逻辑：
-```javascript
-// 在 ref 定义区域增加：
-const showHelpModal = ref(false)
-const showSettingsModal = ref(false)
-const editorSettings = ref({
-  moveSpeed: 1500,
-  lookSpeed: 0.003
-})
-
-function applySettings() {
-  if (sceneManager) {
-    sceneManager.moveSpeed = Number(editorSettings.value.moveSpeed)
-    sceneManager.lookSensitivity = Number(editorSettings.value.lookSpeed)
-  }
-}
-```
-
-5. 在 `<style scoped>` 最底部加一点美化样式：
-```css
-.help-box ul { list-style: none; padding: 0; margin: 0 0 16px; color: #ccc; font-size: 13px; line-height: 2; }
-.help-box kbd { background: #2a3b5c; padding: 2px 6px; border-radius: 3px; font-family: monospace; color: #ffcc00; font-weight: bold; font-size: 11px; margin-right: 4px; box-shadow: 0 2px 0 #0f172a; }
-.mt-3 { margin-top: 16px; }
-input[type="range"] { width: 100%; cursor: pointer; accent-color: #e94560; }
-.range-val { text-align: right; font-size: 11px; color: #4a9eff; font-family: monospace; margin-top: 4px; }
-```
